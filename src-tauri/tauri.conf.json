@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Eclipse Phone Player",
+  "version": "1.0.0",
+  "identifier": "com.eclipse.phoneplayer",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Eclipse Phone Player",
+        "width": 560,
+        "height": 1000,
+        "minWidth": 430,
+        "minHeight": 760,
+        "center": true,
+        "resizable": true,
+        "maximizable": false,
+        "minimizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; img-src 'self' asset: https: data: blob:; media-src 'self' asset: https: blob:; connect-src ipc: http://ipc.localhost https://github.com https://www.gyan.dev; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "category": "Music",
+    "shortDescription": "Phone-style GTA music controller",
+    "longDescription": "A customizable phone-style music library, YouTube search and GTA playback controller.",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "perUser" },
+      "wix": { "language": "en-US" }
+    }
+  }
+}
