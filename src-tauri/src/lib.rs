@@ -33,7 +33,10 @@ pub fn run() {
         }).build())
         .setup(|app| {
             let gs=app.global_shortcut();
-            gs.register(Shortcut::new(None,Code::F3))?;gs.register(Shortcut::new(Some(Modifiers::CONTROL),Code::F3))?;gs.register(Shortcut::new(Some(Modifiers::ALT),Code::F3))?;gs.register(Shortcut::new(Some(Modifiers::SHIFT),Code::F3))?;
+            let _=gs.register(Shortcut::new(None,Code::F3));
+            let _=gs.register(Shortcut::new(Some(Modifiers::CONTROL),Code::F3));
+            let _=gs.register(Shortcut::new(Some(Modifiers::ALT),Code::F3));
+            let _=gs.register(Shortcut::new(Some(Modifiers::SHIFT),Code::F3));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_state,save_songs,save_settings,search_youtube,install_dependency,download_media,send_to_game,import_legacy,open_downloads])
