@@ -42,7 +42,6 @@
     "longDescription": "A customizable phone-style music library, YouTube search and GTA playback controller.",
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
-      "nsis": { "installMode": "perUser" },
       "wix": { "language": "en-US" }
     }
   }
