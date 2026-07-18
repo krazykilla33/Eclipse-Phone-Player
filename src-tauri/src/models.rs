@@ -11,6 +11,7 @@ pub struct Song {
     pub favorite: bool,
     pub length: String,
     pub artwork: Option<String>,
+    pub added_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,11 +57,20 @@ pub struct Settings {
     pub body_scale: f32,
     pub small_scale: f32,
     pub nav_scale: f32,
+    pub orientation: String,
+    pub default_page: String,
+    pub library_sort: String,
+    pub window_opacity: f32,
+    pub confirm_before_exit: bool,
+    pub remember_window_position: bool,
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
+    pub default_playback_mode: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { game_exe:"GTA5.exe".into(), open_chat_key:"t".into(), mode:"Car".into(), volume:100, always_on_top:true, close_after_play:true, start_minimized:false, download_folder:String::new(), theme:Theme::default(), window_scale:1.0, heading_scale:1.0, body_scale:1.0, small_scale:1.0, nav_scale:1.0 }
+        Self { game_exe:"GTA5.exe".into(), open_chat_key:"t".into(), mode:"Car".into(), volume:100, always_on_top:true, close_after_play:true, start_minimized:false, download_folder:String::new(), theme:Theme::default(), window_scale:1.0, heading_scale:1.0, body_scale:1.0, small_scale:1.0, nav_scale:1.0, orientation:"Portrait".into(), default_page:"Library".into(), library_sort:"Favorites First".into(), window_opacity:1.0, confirm_before_exit:false, remember_window_position:false, window_x:None, window_y:None, default_playback_mode:"Car".into() }
     }
 }
 

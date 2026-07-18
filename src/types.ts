@@ -10,6 +10,7 @@ export interface Song {
   favorite: boolean;
   length: string;
   artwork?: string;
+  addedAt?: number;
 }
 
 export interface SearchResult {
@@ -52,6 +53,15 @@ export interface Settings {
   bodyScale: number;
   smallScale: number;
   navScale: number;
+  orientation: "Portrait" | "Landscape";
+  defaultPage: "Library" | "YouTube" | "Downloads" | "Settings";
+  librarySort: "Artist" | "Title" | "Album" | "Recently Added" | "Favorites First";
+  windowOpacity: number;
+  confirmBeforeExit: boolean;
+  rememberWindowPosition: boolean;
+  windowX: number | null;
+  windowY: number | null;
+  defaultPlaybackMode: OutputMode;
 }
 
 export interface DependencyStatus {

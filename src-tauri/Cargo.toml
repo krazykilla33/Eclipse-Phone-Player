@@ -1,6 +1,6 @@
 [package]
 name = "eclipse-phone-player"
-version = "1.3.4"
+version = "1.4.0"
 description = "Phone-style GTA music and video controller"
 authors = ["Eclipse Phone Player"]
 edition = "2021"

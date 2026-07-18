@@ -92,7 +92,7 @@ pub fn import_csv(path: &Path) -> Result<Vec<Song>, String> {
         let r = record.map_err(|e| e.to_string())?; if r.len() < 4 { continue; }
         let artist = r.get(0).unwrap_or("").trim().to_string(); let album = r.get(1).unwrap_or("").trim().to_string(); let title = r.get(2).unwrap_or("").trim().to_string(); let url = r.get(3).unwrap_or("").trim().to_string();
         if artist.is_empty() || title.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) { continue; }
-        songs.push(Song { id:uuid::Uuid::new_v4().to_string(), artist, album, title, url, favorite:r.get(4).unwrap_or("0").trim()=="1", length:r.get(5).unwrap_or("").trim().to_string(), artwork:None });
+        songs.push(Song { id:uuid::Uuid::new_v4().to_string(), artist, album, title, url, favorite:r.get(4).unwrap_or("0").trim()=="1", length:r.get(5).unwrap_or("").trim().to_string(), artwork:None, added_at:None });
     }
     Ok(songs)
 }

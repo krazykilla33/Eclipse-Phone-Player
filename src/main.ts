@@ -1,5 +1,5 @@
 import "./style.css";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./bridge";
 import { applyTheme, themes } from "./themes";
@@ -12,11 +12,11 @@ let landscape = localStorage.getItem("eclipse-orientation") === "landscape";
 let positionLocked = localStorage.getItem("eclipse-position-locked") === "true";
 let selectedId = "";
 let libraryQuery = "";
-let libraryFilter: "all" | "favorites" = "all";
 let youtubeResults: SearchResult[] = [];
 let youtubeQuery = "";
 let busy = false;
 let toastTimer = 0;
+let positionSaveTimer = 0;
 
 const icon = (name: string) => {
   const icons: Record<string, string> = {
@@ -33,6 +33,7 @@ const icon = (name: string) => {
     edit: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L8 18l-4 1 1-4z"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2m3 0l-1 15H6L5 6m5 4v7m4-7v7"/>',
     pin: '<path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 14v7"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7a2 2 0 002 2h3"/>',
     chevron: '<path d="M9 18l6-6-6-6"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] ?? ""}</svg>`;
@@ -40,14 +41,15 @@ const icon = (name: string) => {
 
 const esc = (value: string) => value.replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]!));
 const currentSong = () => state.songs.find(s => s.id === selectedId) ?? state.songs[0];
-const youtubeThumbnail = (song: Song): string => {
-  if (song.artwork) return song.artwork;
+const thumbnailFor = (urlValue: string, explicit?: string): string => {
+  if (explicit) return explicit;
   try {
-    const url = new URL(song.url);
+    const url = new URL(urlValue);
     const id = url.hostname.includes("youtu.be") ? url.pathname.slice(1) : url.searchParams.get("v");
     return id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : "";
   } catch { return ""; }
 };
+const youtubeThumbnail = (song: Song): string => thumbnailFor(song.url, song.artwork);
 
 function shell(): void {
   app.innerHTML = `
@@ -89,7 +91,7 @@ function tab(id: Page, glyph: string, label: string): string {
 function bindShell(): void {
   document.querySelectorAll<HTMLElement>("[data-page]").forEach(el => el.onclick = () => { page = el.dataset.page as Page; localStorage.setItem("eclipse-page", page); renderTabs(); render(); });
   document.querySelector<HTMLButtonElement>("#hide-app")!.onclick = async () => { try { await getCurrentWindow().hide(); } catch { /* browser preview */ } };
-  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { try { await getCurrentWindow().close(); } catch { /* browser preview */ } };
+  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { if (state.settings.confirmBeforeExit && !confirm("Exit Eclipse Phone Player completely?")) return; try { await getCurrentWindow().close(); } catch { /* browser preview */ } };
   document.querySelector<HTMLButtonElement>("#rotate-phone")!.onclick = rotatePhone;
   document.querySelector<HTMLElement>(".island")!.ondblclick = async () => { try { await getCurrentWindow().hide(); } catch { } };
   document.querySelector<HTMLElement>(".phone")!.oncontextmenu = e => { e.preventDefault(); phoneMenu(); };
@@ -119,26 +121,32 @@ function render(): void {
 
 function renderLibrary(view: HTMLElement): void {
   const q = libraryQuery.toLowerCase();
-  const songs = state.songs.filter(s => !q || `${s.artist} ${s.album} ${s.title}`.toLowerCase().includes(q));
+  const songs = sortLibrarySongs(state.songs.filter(s => !q || `${s.artist} ${s.album} ${s.title}`.toLowerCase().includes(q)));
   view.innerHTML = `
     <div class="searchbox">${icon("search")}<input id="library-search" value="${esc(libraryQuery)}" placeholder="Search your library"/><button id="add-song">${icon("plus")}</button></div>
-    <div class="library-toolbar"><label class="output-select"><span>PLAY USING</span><select id="library-mode"><option ${state.settings.mode === "Car" ? "selected" : ""}>Car</option><option ${state.settings.mode === "Speaker" ? "selected" : ""}>Speaker</option><option ${state.settings.mode === "TV" ? "selected" : ""}>TV</option></select></label><div class="segmented"><button data-filter="all" class="${libraryFilter === "all" ? "active" : ""}">All</button><button data-filter="favorites" class="${libraryFilter === "favorites" ? "active" : ""}">Favorites</button></div></div>
+    <div class="library-toolbar"><label class="output-select"><span>PLAY USING</span><select id="library-mode"><option ${state.settings.mode === "Car" ? "selected" : ""}>Car</option><option ${state.settings.mode === "Speaker" ? "selected" : ""}>Speaker</option><option ${state.settings.mode === "TV" ? "selected" : ""}>TV</option></select></label><label class="sort-select"><span>SORT BY</span><select id="library-sort">${(["Artist","Title","Album","Recently Added","Favorites First"] as const).map(value=>`<option ${state.settings.librarySort===value?"selected":""}>${value}</option>`).join("")}</select></label></div>
     <div class="library-count"><span id="library-count">${songs.length}</span> songs <small>• Double-click a song to play it in GTA</small></div>
     <div id="song-list" class="song-list">${songs.length ? songs.map(songRow).join("") : empty("No matching songs", "Add a song or change your search.")}</div>
     <button class="floating-play" id="random-play" title="Play a random song">${icon("shuffle")}<span>Random play</span></button>`;
   const input = document.querySelector<HTMLInputElement>("#library-search")!;
   input.oninput = () => { libraryQuery = input.value; filterLibraryRows(); };
   document.querySelector<HTMLSelectElement>("#library-mode")!.onchange = async e => { state.settings.mode = (e.target as HTMLSelectElement).value as typeof state.settings.mode; await api.saveSettings(state.settings); toast(`${state.settings.mode} playback selected`); };
+  document.querySelector<HTMLSelectElement>("#library-sort")!.onchange = async e => { state.settings.librarySort=(e.target as HTMLSelectElement).value as typeof state.settings.librarySort;await api.saveSettings(state.settings);renderLibrary(view); };
   document.querySelector<HTMLButtonElement>("#add-song")!.onclick = () => editSong();
   document.querySelector<HTMLButtonElement>("#random-play")!.onclick = () => { if (songs.length) { selectSong(songs[Math.floor(Math.random() * songs.length)].id); playSelected(); } };
   bindSongRows();
-  const all = document.querySelectorAll<HTMLButtonElement>("[data-filter]");
-  all.forEach(btn => btn.onclick = () => {
-    libraryFilter = btn.dataset.filter as "all" | "favorites";
-    all.forEach(x => x.classList.toggle("active", x === btn));
-    filterLibraryRows();
-  });
   filterLibraryRows();
+}
+
+function sortLibrarySongs(songs:Song[]):Song[] {
+  const sorted=[...songs], text=(value:string)=>value.toLocaleLowerCase();
+  sorted.sort((a,b)=>{
+    if(state.settings.librarySort==="Recently Added")return (b.addedAt||0)-(a.addedAt||0);
+    if(state.settings.librarySort==="Favorites First"&&a.favorite!==b.favorite)return a.favorite?-1:1;
+    const av=state.settings.librarySort==="Title"?a.title:state.settings.librarySort==="Album"?(a.album||a.title):a.artist;
+    const bv=state.settings.librarySort==="Title"?b.title:state.settings.librarySort==="Album"?(b.album||b.title):b.artist;
+    return text(av).localeCompare(text(bv))||text(a.title).localeCompare(text(b.title));
+  });return sorted;
 }
 
 function songRow(song: Song): string {
@@ -164,8 +172,7 @@ function filterLibraryRows(): void {
   let visible = 0;
   document.querySelectorAll<HTMLElement>(".song-row").forEach(row => {
     const matchesSearch = !q || (row.textContent ?? "").toLowerCase().includes(q);
-    const matchesFilter = libraryFilter === "all" || row.dataset.favorite === "true";
-    const show = matchesSearch && matchesFilter;
+    const show = matchesSearch;
     row.classList.toggle("filtered-out", !show); if (show) visible++;
   });
   const count = document.querySelector("#library-count"); if (count) count.textContent = String(visible);
@@ -216,7 +223,8 @@ function renderYouTube(view: HTMLElement): void {
 }
 
 function resultRow(r: SearchResult, i: number): string {
-  return `<article class="result-row"><div class="video-thumb" style="--h:${hashHue(r.url)}">${icon("youtube")}</div><div class="result-copy"><strong>${esc(r.title)}</strong><span>${esc(r.channel)} • ${esc(r.length || "—")}</span></div><div class="result-actions"><button data-result-add="${i}" title="Add">${icon("plus")}</button><button data-result-copy="${i}" title="Copy URL">⧉</button><button data-result-download="${i}" title="Download">${icon("download")}</button></div></article>`;
+  const thumbnail=thumbnailFor(r.url,r.thumbnail),added=state.songs.some(song=>song.url===r.url);
+  return `<article class="result-row"><div class="video-thumb" style="--h:${hashHue(r.url)}">${thumbnail?`<img src="${esc(thumbnail)}" alt="" loading="lazy" onerror="this.remove()"/>`:""}${icon("youtube")}</div><div class="result-copy"><strong>${esc(r.title)}</strong><span>${esc(r.channel)} • ${esc(r.length || "—")}</span></div><div class="result-actions"><button data-result-add="${i}" title="${added?"Already in Library":"Add to Library"}" ${added?"disabled":""}>${added?"✓":icon("plus")}</button><button data-result-copy="${i}" title="Copy URL">${icon("copy")}</button><button data-result-download="${i}" title="Download">${icon("download")}</button></div></article>`;
 }
 
 async function searchYouTube(): Promise<void> {
@@ -253,8 +261,13 @@ function renderSettings(view: HTMLElement): void {
     ${textSizeRow("smallScale","Small text","Metadata, hints and secondary labels",state.settings.smallScale)}
     ${textSizeRow("navScale","Navigation","Bottom navigation labels",state.settings.navScale)}
     <button id="reset-text-sizes" class="text-reset">Reset text sizes</button></section>
-    <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
+    <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Default playback mode</span><select id="default-playback-mode"><option ${state.settings.defaultPlaybackMode==="Car"?"selected":""}>Car</option><option ${state.settings.defaultPlaybackMode==="Speaker"?"selected":""}>Speaker</option><option ${state.settings.defaultPlaybackMode==="TV"?"selected":""}>TV</option></select></label><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
     <section class="settings-section"><p class="section-label">WINDOW</p>${toggleRow("always-top", "Always on top", "Keep the phone above GTA", state.settings.alwaysOnTop)}${toggleRow("close-after", "Hide after play", "Return focus to GTA", state.settings.closeAfterPlay)}
+    ${toggleRow("confirm-exit", "Confirm before exit", "Ask before the × button closes the app", state.settings.confirmBeforeExit)}${toggleRow("remember-position", "Remember window position", "Restore the phone to its previous screen location", state.settings.rememberWindowPosition)}
+    <label class="form-row"><span>Startup orientation</span><select id="startup-orientation"><option ${state.settings.orientation==="Portrait"?"selected":""}>Portrait</option><option ${state.settings.orientation==="Landscape"?"selected":""}>Landscape</option></select></label>
+    <label class="form-row"><span>Default page</span><select id="default-page"><option ${state.settings.defaultPage==="Library"?"selected":""}>Library</option><option ${state.settings.defaultPage==="YouTube"?"selected":""}>YouTube</option><option ${state.settings.defaultPage==="Downloads"?"selected":""}>Downloads</option><option ${state.settings.defaultPage==="Settings"?"selected":""}>Settings</option></select></label>
+    <label class="form-row"><span>Default library sorting</span><select id="default-library-sort">${(["Artist","Title","Album","Recently Added","Favorites First"] as const).map(value=>`<option ${state.settings.librarySort===value?"selected":""}>${value}</option>`).join("")}</select></label>
+    <label class="form-row range-setting opacity-setting"><span>Phone opacity <output>${Math.round(state.settings.windowOpacity*100)}%</output></span><input id="window-opacity" type="range" min="0.55" max="1" step="0.05" value="${state.settings.windowOpacity}"/><small>Changes the transparency of the complete phone.</small></label>
     <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/><small>The layout condenses below 90% while text stays readable.</small></label></section>
     <section class="settings-section"><p class="section-label">MIGRATION</p><button id="import-legacy" class="settings-row"><span class="settings-icon">AHK</span><span><strong>Import MusicList.txt</strong><small>Bring your existing AHK library into this app</small></span>${icon("chevron")}</button></section>
     <button id="save-settings" class="primary-wide">Save settings</button></div>`;
@@ -265,7 +278,8 @@ function renderSettings(view: HTMLElement): void {
     state.settings[key]=+input.value; input.parentElement!.querySelector("output")!.textContent=`${Math.round(+input.value*100)}%`; applyTextScales();
   });
   document.querySelector<HTMLButtonElement>("#reset-text-sizes")!.onclick = () => { state.settings.headingScale=state.settings.bodyScale=state.settings.smallScale=state.settings.navScale=1;applyTextScales();renderSettings(view); };
-  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const value = +(e.target as HTMLInputElement).value; state.settings.windowScale = value; document.querySelector<HTMLOutputElement>(".range-setting output")!.value = `${Math.round(value * 100)}%`; resizePhone(); };
+  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value; state.settings.windowScale = value; input.parentElement!.querySelector("output")!.textContent = `${Math.round(value * 100)}%`; resizePhone(); };
+  document.querySelector<HTMLInputElement>("#window-opacity")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value;state.settings.windowOpacity=value;input.parentElement!.querySelector("output")!.textContent=`${Math.round(value*100)}%`;applyWindowOpacity(); };
   document.querySelector<HTMLButtonElement>("#import-legacy")!.onclick = async () => { try { const count = await api.importLegacy(); state = await api.state(); selectedId = state.songs[0]?.id ?? ""; toast(`Imported ${count} songs`); render(); } catch (e) { errorToast(e); } };
   document.querySelector<HTMLButtonElement>("#save-settings")!.onclick = saveSettingsForm;
 }
@@ -284,30 +298,43 @@ async function saveSettingsForm(): Promise<void> {
   state.settings.downloadFolder = document.querySelector<HTMLInputElement>("#download-folder")!.value.trim();
   state.settings.alwaysOnTop = document.querySelector<HTMLInputElement>("#always-top")!.checked;
   state.settings.closeAfterPlay = document.querySelector<HTMLInputElement>("#close-after")!.checked;
+  state.settings.confirmBeforeExit = document.querySelector<HTMLInputElement>("#confirm-exit")!.checked;
+  state.settings.rememberWindowPosition = document.querySelector<HTMLInputElement>("#remember-position")!.checked;
+  state.settings.orientation = document.querySelector<HTMLSelectElement>("#startup-orientation")!.value as typeof state.settings.orientation;
+  state.settings.defaultPage = document.querySelector<HTMLSelectElement>("#default-page")!.value as typeof state.settings.defaultPage;
+  state.settings.librarySort = document.querySelector<HTMLSelectElement>("#default-library-sort")!.value as typeof state.settings.librarySort;
+  state.settings.defaultPlaybackMode = document.querySelector<HTMLSelectElement>("#default-playback-mode")!.value as typeof state.settings.defaultPlaybackMode;
   await api.saveSettings(state.settings); try { await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); } catch { }
   toast("Settings saved");
 }
 
 function editSong(song?: Song, addAsNew = false): void {
   const editing = !!song && !addAsNew;
+  const preview= song ? youtubeThumbnail(song) : "";
   modal(`<form id="song-form" class="modal-card"><div class="modal-head"><div><p class="eyebrow">LIBRARY</p><h2>${editing ? "Edit song" : "Add song"}</h2></div><button type="button" data-close>×</button></div>
+    <div class="artwork-editor"><div id="artwork-preview" class="edit-artwork" style="--h:${hashHue(song?.url||"new")}">${preview?`<img src="${esc(preview)}" alt="Song thumbnail" onerror="this.remove()"/>`:""}<span>♫</span></div><label><span>Thumbnail URL</span><input id="artwork" value="${esc(song?.artwork||preview)}" placeholder="Generated automatically for YouTube"/></label><button type="button" id="reset-artwork">Reset</button></div>
     ${field("Artist", "artist", song?.artist ?? "")}${field("Album", "album", song?.album ?? "")}${field("Song title", "title", song?.title ?? "")}${field("YouTube / media URL", "url", song?.url ?? "", "url")}${field("Length", "length", song?.length ?? "")}
     <label class="check-line"><input id="favorite" type="checkbox" ${song?.favorite ? "checked" : ""}/> Favorite</label><button class="primary-wide">${editing ? "Save changes" : "Add to library"}</button></form>`);
   document.querySelector<HTMLFormElement>("#song-form")!.onsubmit = async e => {
     e.preventDefault(); const value = (id: string) => (document.querySelector<HTMLInputElement>(`#${id}`)!.value.trim());
     if (!value("artist") || !value("title") || !/^https?:\/\//i.test(value("url"))) { toast("Artist, title and a complete URL are required", true); return; }
-    const next: Song = { id: editing ? song!.id : crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked, artwork: song?.artwork };
+    const next: Song = { id: editing ? song!.id : crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked, artwork: value("artwork")||undefined, addedAt: editing ? song!.addedAt : Date.now() };
     if (editing) state.songs[state.songs.findIndex(s => s.id === song!.id)] = next; else state.songs.push(next);
     selectedId = next.id; await api.saveSongs(state.songs); closeModal(); toast(editing ? "Song updated" : "Song added to Library"); render();
   };
+  const artwork=document.querySelector<HTMLInputElement>("#artwork")!;artwork.oninput=()=>updateArtworkPreview(artwork.value);
+  document.querySelector<HTMLButtonElement>("#reset-artwork")!.onclick=()=>{artwork.value="";updateArtworkPreview(thumbnailFor(document.querySelector<HTMLInputElement>("#url")!.value));};
 }
+
+function updateArtworkPreview(url:string):void { const preview=document.querySelector<HTMLElement>("#artwork-preview");if(!preview)return;preview.querySelector("img")?.remove();if(url){const img=document.createElement("img");img.src=url;img.alt="Song thumbnail";img.onerror=()=>img.remove();preview.prepend(img);} }
 
 function field(label: string, id: string, value: string, type = "text"): string { return `<label class="modal-field"><span>${label}</span><input id="${id}" type="${type}" value="${esc(value)}"/></label>`; }
 
 function songActions(id: string): void {
   const song = state.songs.find(s => s.id === id); if (!song) return;
-  modal(`<div class="modal-card action-sheet"><div class="sheet-grab"></div><div class="sheet-song"><div class="cover" style="--h:${hashHue(song.id)}">${esc(song.title[0] ?? "E")}</div><div><strong>${esc(song.title)}</strong><span>${esc(song.artist)}</span></div></div>
-    <button id="action-play">${icon("play")} Play now</button><button id="action-copy">⧉ Copy URL</button><button id="action-edit">${icon("edit")} Edit song</button><button id="action-download">${icon("download")} Download</button><button id="action-delete" class="danger">${icon("trash")} Delete song</button><button data-close>Cancel</button></div>`);
+  const thumbnail=youtubeThumbnail(song);
+  modal(`<div class="modal-card action-sheet"><div class="sheet-grab"></div><div class="sheet-song"><div class="cover" style="--h:${hashHue(song.id)}">${thumbnail?`<img src="${esc(thumbnail)}" alt="" onerror="this.remove()"/>`:""}<span>${esc(song.title[0] ?? "E")}</span></div><div><strong>${esc(song.title)}</strong><span>${esc(song.artist)}</span></div></div>
+    <button id="action-play">${icon("play")} Play now</button><button id="action-copy">${icon("copy")} Copy URL</button><button id="action-edit">${icon("edit")} Edit song</button><button id="action-download">${icon("download")} Download</button><button id="action-delete" class="danger">${icon("trash")} Delete song</button><button data-close>Cancel</button></div>`);
   document.querySelector<HTMLButtonElement>("#action-play")!.onclick = () => { selectedId = id; closeModal(); render(); playSelected(); };
   document.querySelector<HTMLButtonElement>("#action-copy")!.onclick = async () => { await api.copyUrl(song.url); closeModal(); toast("Song URL copied"); };
   document.querySelector<HTMLButtonElement>("#action-edit")!.onclick = () => { closeModal(); editSong(song); };
@@ -376,6 +403,8 @@ function applyTextScales():void {
   root.style.setProperty("--nav-scale",String(state.settings.navScale||1));
 }
 
+function applyWindowOpacity():void { document.documentElement.style.setProperty("--window-opacity",String(state.settings.windowOpacity||1)); }
+
 async function resizePhone(): Promise<void> {
   const scale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1));
   const width = (landscape ? 960 : 530) * scale;
@@ -386,7 +415,6 @@ async function resizePhone(): Promise<void> {
 
 async function rotatePhone(): Promise<void> {
   landscape = !landscape;
-  localStorage.setItem("eclipse-orientation", landscape ? "landscape" : "portrait");
   await resizePhone();
   toast(landscape ? "Landscape view" : "Portrait view");
 }
@@ -405,7 +433,16 @@ function phoneMenu(): void {
   document.querySelector<HTMLButtonElement>("#quick-pin")!.onclick = async () => { state.settings.alwaysOnTop = !state.settings.alwaysOnTop; await api.saveSettings(state.settings); await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); closeModal(); };
   document.querySelector<HTMLButtonElement>("#quick-lock")!.onclick = () => { positionLocked = !positionLocked; localStorage.setItem("eclipse-position-locked", String(positionLocked)); closeModal(); applyPositionLock(); toast(positionLocked ? "Phone position locked" : "Phone position unlocked"); };
   document.querySelector<HTMLButtonElement>("#quick-settings")!.onclick = () => { closeModal(); page = "settings"; localStorage.setItem("eclipse-page", page); renderTabs(); render(); };
-  document.querySelector<HTMLButtonElement>("#quick-exit")!.onclick = async () => { await getCurrentWindow().close(); };
+  document.querySelector<HTMLButtonElement>("#quick-exit")!.onclick = async () => { if(state.settings.confirmBeforeExit&&!confirm("Exit Eclipse Phone Player completely?"))return;await getCurrentWindow().close(); };
+}
+
+async function restoreWindowPosition():Promise<void>{
+  if(!state.settings.rememberWindowPosition||state.settings.windowX==null||state.settings.windowY==null)return;
+  try{await getCurrentWindow().setPosition(new PhysicalPosition(state.settings.windowX,state.settings.windowY));}catch{}
+}
+
+async function watchWindowPosition():Promise<void>{
+  try{await getCurrentWindow().onMoved(({payload})=>{if(!state.settings.rememberWindowPosition)return;state.settings.windowX=payload.x;state.settings.windowY=payload.y;window.clearTimeout(positionSaveTimer);positionSaveTimer=window.setTimeout(()=>api.saveSettings(state.settings).catch(()=>undefined),500);});}catch{}
 }
 
 function startClock(): void { const update = () => { const el = document.querySelector("#clock"); if (el) el.textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date()); }; update(); window.setInterval(update, 30_000); }
@@ -419,7 +456,7 @@ function startVisualizer(): void {
 
 async function init(): Promise<void> {
   try {
-    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); state.settings.headingScale ||= 1; state.settings.bodyScale ||= 1; state.settings.smallScale ||= 1; state.settings.navScale ||= 1; selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); applyTextScales(); shell(); await resizePhone();
+    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); state.settings.headingScale ||= 1; state.settings.bodyScale ||= 1; state.settings.smallScale ||= 1; state.settings.navScale ||= 1; state.settings.orientation ||= "Portrait";state.settings.defaultPage||="Library";state.settings.librarySort||="Favorites First";state.settings.windowOpacity=Math.min(1,Math.max(.55,state.settings.windowOpacity||1));state.settings.defaultPlaybackMode||=state.settings.mode||"Car";landscape=state.settings.orientation==="Landscape";page=({Library:"library",YouTube:"youtube",Downloads:"downloads",Settings:"settings"} as const)[state.settings.defaultPage]||"library";state.settings.mode=state.settings.defaultPlaybackMode; selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); applyTextScales();applyWindowOpacity(); shell(); await resizePhone();await restoreWindowPosition();await watchWindowPosition();
     await listen<string>("hotkey", async ({ payload }) => {
       if (!state.songs.length) return;
       const previousMode = state.settings.mode;
