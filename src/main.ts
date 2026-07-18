@@ -12,6 +12,7 @@ let landscape = localStorage.getItem("eclipse-orientation") === "landscape";
 let positionLocked = localStorage.getItem("eclipse-position-locked") === "true";
 let selectedId = "";
 let libraryQuery = "";
+let libraryFilter: "all" | "favorites" = "all";
 let youtubeResults: SearchResult[] = [];
 let youtubeQuery = "";
 let busy = false;
@@ -121,10 +122,10 @@ function renderLibrary(view: HTMLElement): void {
   const songs = state.songs.filter(s => !q || `${s.artist} ${s.album} ${s.title}`.toLowerCase().includes(q));
   view.innerHTML = `
     <div class="searchbox">${icon("search")}<input id="library-search" value="${esc(libraryQuery)}" placeholder="Search your library"/><button id="add-song">${icon("plus")}</button></div>
-    <div class="library-toolbar"><label class="output-select"><span>PLAY USING</span><select id="library-mode"><option ${state.settings.mode === "Car" ? "selected" : ""}>Car</option><option ${state.settings.mode === "Speaker" ? "selected" : ""}>Speaker</option><option ${state.settings.mode === "TV" ? "selected" : ""}>TV</option></select></label><div class="segmented"><button data-filter="all" class="active">All</button><button data-filter="favorites">Favorites</button></div></div>
+    <div class="library-toolbar"><label class="output-select"><span>PLAY USING</span><select id="library-mode"><option ${state.settings.mode === "Car" ? "selected" : ""}>Car</option><option ${state.settings.mode === "Speaker" ? "selected" : ""}>Speaker</option><option ${state.settings.mode === "TV" ? "selected" : ""}>TV</option></select></label><div class="segmented"><button data-filter="all" class="${libraryFilter === "all" ? "active" : ""}">All</button><button data-filter="favorites" class="${libraryFilter === "favorites" ? "active" : ""}">Favorites</button></div></div>
     <div class="library-count"><span id="library-count">${songs.length}</span> songs <small>• Double-click a song to play it in GTA</small></div>
     <div id="song-list" class="song-list">${songs.length ? songs.map(songRow).join("") : empty("No matching songs", "Add a song or change your search.")}</div>
-    <button class="floating-play" id="random-play">${icon("shuffle")} Random play</button>`;
+    <button class="floating-play" id="random-play" title="Play a random song">${icon("shuffle")}<span>Random play</span></button>`;
   const input = document.querySelector<HTMLInputElement>("#library-search")!;
   input.oninput = () => { libraryQuery = input.value; filterLibraryRows(); };
   document.querySelector<HTMLSelectElement>("#library-mode")!.onchange = async e => { state.settings.mode = (e.target as HTMLSelectElement).value as typeof state.settings.mode; await api.saveSettings(state.settings); toast(`${state.settings.mode} playback selected`); };
@@ -133,9 +134,11 @@ function renderLibrary(view: HTMLElement): void {
   bindSongRows();
   const all = document.querySelectorAll<HTMLButtonElement>("[data-filter]");
   all.forEach(btn => btn.onclick = () => {
-    all.forEach(x => x.classList.remove("active")); btn.classList.add("active");
-    document.querySelectorAll<HTMLElement>(".song-row").forEach(row => row.hidden = btn.dataset.filter === "favorites" && row.dataset.favorite !== "true");
+    libraryFilter = btn.dataset.filter as "all" | "favorites";
+    all.forEach(x => x.classList.toggle("active", x === btn));
+    filterLibraryRows();
   });
+  filterLibraryRows();
 }
 
 function songRow(song: Song): string {
@@ -160,8 +163,10 @@ function filterLibraryRows(): void {
   const q = libraryQuery.trim().toLowerCase();
   let visible = 0;
   document.querySelectorAll<HTMLElement>(".song-row").forEach(row => {
-    const show = !q || (row.textContent ?? "").toLowerCase().includes(q);
-    row.hidden = !show; if (show) visible++;
+    const matchesSearch = !q || (row.textContent ?? "").toLowerCase().includes(q);
+    const matchesFilter = libraryFilter === "all" || row.dataset.favorite === "true";
+    const show = matchesSearch && matchesFilter;
+    row.classList.toggle("filtered-out", !show); if (show) visible++;
   });
   const count = document.querySelector("#library-count"); if (count) count.textContent = String(visible);
 }
@@ -302,8 +307,9 @@ function field(label: string, id: string, value: string, type = "text"): string 
 function songActions(id: string): void {
   const song = state.songs.find(s => s.id === id); if (!song) return;
   modal(`<div class="modal-card action-sheet"><div class="sheet-grab"></div><div class="sheet-song"><div class="cover" style="--h:${hashHue(song.id)}">${esc(song.title[0] ?? "E")}</div><div><strong>${esc(song.title)}</strong><span>${esc(song.artist)}</span></div></div>
-    <button id="action-play">${icon("play")} Play now</button><button id="action-edit">${icon("edit")} Edit song</button><button id="action-download">${icon("download")} Download</button><button id="action-delete" class="danger">${icon("trash")} Delete song</button><button data-close>Cancel</button></div>`);
+    <button id="action-play">${icon("play")} Play now</button><button id="action-copy">⧉ Copy URL</button><button id="action-edit">${icon("edit")} Edit song</button><button id="action-download">${icon("download")} Download</button><button id="action-delete" class="danger">${icon("trash")} Delete song</button><button data-close>Cancel</button></div>`);
   document.querySelector<HTMLButtonElement>("#action-play")!.onclick = () => { selectedId = id; closeModal(); render(); playSelected(); };
+  document.querySelector<HTMLButtonElement>("#action-copy")!.onclick = async () => { await api.copyUrl(song.url); closeModal(); toast("Song URL copied"); };
   document.querySelector<HTMLButtonElement>("#action-edit")!.onclick = () => { closeModal(); editSong(song); };
   document.querySelector<HTMLButtonElement>("#action-download")!.onclick = () => { closeModal(); downloadDialog(song.url); };
   document.querySelector<HTMLButtonElement>("#action-delete")!.onclick = async () => { if (confirm(`Delete ${song.title}?`)) { state.songs = state.songs.filter(s => s.id !== id); selectedId = state.songs[0]?.id ?? ""; await api.saveSongs(state.songs); closeModal(); render(); } };
@@ -339,7 +345,12 @@ function selectSong(id: string): void { selectedId = id; }
 async function playSelected(): Promise<void> {
   const song = currentSong(); if (!song) return;
   const text = state.settings.mode === "Car" ? `/carurl ${song.url}` : song.url;
-  try { await api.sendToGame(text, state.settings.mode === "Car"); toast(`${song.title} sent to ${state.settings.mode}`); if (state.settings.closeAfterPlay) { try { await getCurrentWindow().hide(); } catch { } } } catch (e) { errorToast(e); }
+  try {
+    if (state.settings.mode !== "Car") await api.copyUrl(song.url);
+    await api.sendToGame(text, state.settings.mode === "Car");
+    toast(state.settings.mode === "Car" ? `${song.title} sent to Car` : `${song.title} pasted to ${state.settings.mode} • URL kept in clipboard`);
+    if (state.settings.closeAfterPlay) { try { await getCurrentWindow().hide(); } catch { } }
+  } catch (e) { errorToast(e); }
 }
 
 async function stopPlayback(): Promise<void> {

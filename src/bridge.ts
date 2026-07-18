@@ -27,6 +27,7 @@ export const api = {
   saveSettings: (settings: Settings) => command<void>("save_settings", { settings }),
   searchYouTube: (query: string) => command<SearchResult[]>("search_youtube", { query }),
   sendToGame: (text: string, openChat: boolean) => command<void>("send_to_game", { text, openChat }),
+  copyUrl: (text: string) => command<void>("copy_url", { text }),
   installDependency: (name: string) => command<void>("install_dependency", { name }),
   downloadMedia: (url: string, kind: "audio" | "video") => command<string>("download_media", { url, kind }),
   importLegacy: () => command<number>("import_legacy"),
