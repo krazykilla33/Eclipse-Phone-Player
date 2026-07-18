@@ -26,6 +26,7 @@ export const api = {
   saveSongs: (songs: Song[]) => command<void>("save_songs", { songs }),
   saveSettings: (settings: Settings) => command<void>("save_settings", { settings }),
   searchYouTube: (query: string) => command<SearchResult[]>("search_youtube", { query }),
+  fetchMetadata: (url: string) => command<SearchResult>("fetch_metadata", { url }),
   sendToGame: (text: string, openChat: boolean) => command<void>("send_to_game", { text, openChat }),
   copyUrl: (text: string) => command<void>("copy_url", { text }),
   installDependency: (name: string) => command<void>("install_dependency", { name }),

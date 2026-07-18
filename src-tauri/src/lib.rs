@@ -18,6 +18,7 @@ fn get_state(app: tauri::AppHandle) -> Result<AppState,String> {
 #[tauri::command] fn save_songs(app:tauri::AppHandle,songs:Vec<Song>)->Result<(),String>{storage::save_songs(&app,&songs)}
 #[tauri::command] fn save_settings(app:tauri::AppHandle,settings:Settings)->Result<(),String>{storage::save_settings(&app,&settings)}
 #[tauri::command] fn search_youtube(app:tauri::AppHandle,query:String)->Result<Vec<SearchResult>,String>{if query.trim().is_empty(){return Err("Enter a search phrase.".into());}media::search(&app,query.trim())}
+#[tauri::command] fn fetch_metadata(app:tauri::AppHandle,url:String)->Result<SearchResult,String>{media::metadata(&app,url.trim())}
 #[tauri::command] fn install_dependency(app:tauri::AppHandle,name:String)->Result<(),String>{media::install(&app,&name)}
 #[tauri::command] fn download_media(app:tauri::AppHandle,url:String,kind:String)->Result<String,String>{media::download_media(&app,&url,&kind)}
 #[tauri::command] fn send_to_game(app:tauri::AppHandle,text:String,open_chat:bool)->Result<(),String>{let s=storage::load_settings(&app)?;windows_control::send(&s.game_exe,&s.open_chat_key,&text,open_chat)}
@@ -55,7 +56,7 @@ pub fn run() {
             let _=gs.register(Shortcut::new(Some(Modifiers::SHIFT),Code::F3));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_state,save_songs,save_settings,search_youtube,install_dependency,download_media,send_to_game,copy_url,import_legacy,open_downloads])
+        .invoke_handler(tauri::generate_handler![get_state,save_songs,save_settings,search_youtube,fetch_metadata,install_dependency,download_media,send_to_game,copy_url,import_legacy,open_downloads])
         .run(tauri::generate_context!())
         .expect("error while running Eclipse Phone Player");
 }

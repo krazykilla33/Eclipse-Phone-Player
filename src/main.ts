@@ -132,7 +132,7 @@ function renderLibrary(view: HTMLElement): void {
   input.oninput = () => { libraryQuery = input.value; filterLibraryRows(); };
   document.querySelector<HTMLSelectElement>("#library-mode")!.onchange = async e => { state.settings.mode = (e.target as HTMLSelectElement).value as typeof state.settings.mode; await api.saveSettings(state.settings); toast(`${state.settings.mode} playback selected`); };
   document.querySelector<HTMLSelectElement>("#library-sort")!.onchange = async e => { state.settings.librarySort=(e.target as HTMLSelectElement).value as typeof state.settings.librarySort;await api.saveSettings(state.settings);renderLibrary(view); };
-  document.querySelector<HTMLButtonElement>("#add-song")!.onclick = () => editSong();
+  document.querySelector<HTMLButtonElement>("#add-song")!.onclick = quickAddSong;
   document.querySelector<HTMLButtonElement>("#random-play")!.onclick = () => { if (songs.length) { selectSong(songs[Math.floor(Math.random() * songs.length)].id); playSelected(); } };
   bindSongRows();
   filterLibraryRows();
@@ -290,6 +290,22 @@ function toggleRow(id: string, title: string, copy: string, checked: boolean): s
 
 function textSizeRow(key:string,title:string,copy:string,value:number):string {
   return `<label class="text-size-row"><span><strong>${title}</strong><small>${copy}</small></span><output>${Math.round(value*100)}%</output><input data-text-scale="${key}" type="range" min="0.8" max="1.5" step="0.05" value="${value}"/></label>`;
+}
+
+function quickAddSong():void {
+  modal(`<form id="quick-add-form" class="modal-card quick-add-card"><div class="modal-head"><div><p class="eyebrow">LIBRARY</p><h2>Add song</h2></div><button type="button" data-close>×</button></div><label class="quick-url-field"><span>YouTube / media URL</span><input id="quick-song-url" type="url" required autofocus placeholder="https://www.youtube.com/watch?v=…"/></label><p class="quick-add-note">Title, artist, length and thumbnail will be filled automatically.</p><button id="quick-add-submit" class="primary-wide">Add to Library</button></form>`);
+  const input=document.querySelector<HTMLInputElement>("#quick-song-url")!;window.setTimeout(()=>input.focus(),50);
+  document.querySelector<HTMLFormElement>("#quick-add-form")!.onsubmit=async e=>{
+    e.preventDefault();const url=input.value.trim();if(!/^https?:\/\//i.test(url)){toast("Enter a complete media URL",true);return;}
+    if(state.songs.some(song=>song.url===url)){toast("That URL is already in your Library",true);return;}
+    const button=document.querySelector<HTMLButtonElement>("#quick-add-submit")!;button.disabled=true;button.textContent="Reading song information…";
+    try{
+      const info=await api.fetchMetadata(url);
+      if(state.songs.some(song=>song.url===info.url)){toast("That song is already in your Library",true);button.disabled=false;button.textContent="Add to Library";return;}
+      const song:Song={id:crypto.randomUUID(),artist:info.channel||"Unknown artist",album:/youtu(?:\.be|be\.com)/i.test(info.url)?"YouTube":"Media",title:info.title||"Untitled",url:info.url||url,length:info.length||"—",favorite:false,artwork:info.thumbnail,addedAt:Date.now()};
+      state.songs.push(song);selectedId=song.id;await api.saveSongs(state.songs);closeModal();toast(`${song.title} added to Library`);render();
+    }catch(error){errorToast(error);button.disabled=false;button.textContent="Add to Library";}
+  };
 }
 
 async function saveSettingsForm(): Promise<void> {
