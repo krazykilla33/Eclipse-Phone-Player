@@ -1,5 +1,5 @@
 import "./style.css";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./bridge";
 import { applyTheme, themes } from "./themes";
@@ -7,7 +7,8 @@ import type { AppState, Page, SearchResult, Song, Theme } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let state: AppState;
-let page: Page = "player";
+let page: Page = "library";
+let landscape = false;
 let selectedId = "";
 let libraryQuery = "";
 let youtubeResults: SearchResult[] = [];
@@ -39,7 +40,7 @@ const currentSong = () => state.songs.find(s => s.id === selectedId) ?? state.so
 
 function shell(): void {
   app.innerHTML = `
-    <main class="phone-wrap" style="--phone-scale:${state.settings.windowScale}">
+    <main class="phone-wrap">
       <section class="phone" aria-label="Eclipse Phone Player">
         <div class="metal-edge"></div><div class="side-key key-a"></div><div class="side-key key-b"></div><div class="side-key key-c"></div>
         <div class="screen">
@@ -52,14 +53,15 @@ function shell(): void {
             <div><p class="eyebrow">ECLIPSE</p><h1 id="page-title">Player</h1></div>
             <div class="app-actions">
               <button class="icon-btn" id="always-on-top" title="Always on top">◇</button>
-              <button class="icon-btn danger-hover" id="close-app" title="Hide">×</button>
+              <button class="icon-btn" id="hide-app" title="Hide phone">−</button>
+              <button class="icon-btn danger-hover" id="close-app" title="Exit Eclipse Phone Player">×</button>
             </div>
           </div>
           <section id="view" class="view"></section>
           <nav class="tabbar">
-            ${tab("library", "library", "Library")}${tab("player", "player", "Player")}${tab("youtube", "youtube", "YouTube")}${tab("downloads", "download", "Downloads")}${tab("settings", "settings", "More")}
+            ${tab("library", "library", "Library")}${tab("youtube", "youtube", "YouTube")}${tab("downloads", "download", "Downloads")}${tab("settings", "settings", "Settings")}
           </nav>
-          <div class="home-indicator"></div>
+          <button class="home-indicator" id="rotate-phone" title="Rotate phone" aria-label="Rotate phone 90 degrees"></button>
         </div>
       </section>
     </main>
@@ -75,7 +77,9 @@ function tab(id: Page, glyph: string, label: string): string {
 
 function bindShell(): void {
   document.querySelectorAll<HTMLElement>("[data-page]").forEach(el => el.onclick = () => { page = el.dataset.page as Page; renderTabs(); render(); });
-  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { try { await getCurrentWindow().hide(); } catch { /* browser preview */ } };
+  document.querySelector<HTMLButtonElement>("#hide-app")!.onclick = async () => { try { await getCurrentWindow().hide(); } catch { /* browser preview */ } };
+  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { try { await getCurrentWindow().close(); } catch { /* browser preview */ } };
+  document.querySelector<HTMLButtonElement>("#rotate-phone")!.onclick = rotatePhone;
   document.querySelector<HTMLButtonElement>("#always-on-top")!.onclick = async () => {
     state.settings.alwaysOnTop = !state.settings.alwaysOnTop;
     await api.saveSettings(state.settings); try { await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); } catch { }
@@ -128,7 +132,7 @@ function songRow(song: Song): string {
 }
 
 function bindSongRows(): void {
-  document.querySelectorAll<HTMLElement>(".song-row").forEach(row => row.onclick = e => { if ((e.target as Element).closest("button")) return; selectSong(row.dataset.id!); page = "player"; renderTabs(); render(); });
+  document.querySelectorAll<HTMLElement>(".song-row").forEach(row => row.onclick = e => { if ((e.target as Element).closest("button")) return; selectSong(row.dataset.id!); render(); toast("Song selected — use ••• to play"); });
   document.querySelectorAll<HTMLButtonElement>("[data-heart]").forEach(btn => btn.onclick = async () => { const song = state.songs.find(s => s.id === btn.dataset.heart); if (song) { song.favorite = !song.favorite; await api.saveSongs(state.songs); render(); } });
   document.querySelectorAll<HTMLButtonElement>("[data-more]").forEach(btn => btn.onclick = () => songActions(btn.dataset.more!));
 }
@@ -207,16 +211,16 @@ function dependencyCard(id: string, title: string, copy: string, ready: boolean)
 function renderSettings(view: HTMLElement): void {
   const t = state.settings.theme;
   view.innerHTML = `<div class="settings-scroll">
-    <section class="settings-section"><p class="section-label">APPEARANCE</p><div class="theme-carousel">${themes.map(x => `<button class="theme-chip ${t.name === x.name ? "active" : ""}" data-theme="${esc(x.name)}"><i style="--a:${x.accent};--b:${x.accent2}"></i>${esc(x.name)}</button>`).join("")}<button class="theme-chip ${!themes.some(x => x.name === t.name) ? "active" : ""}" data-custom-theme><i style="--a:${t.accent};--b:${t.accent2}"></i>Custom</button></div>
+    <section class="settings-section"><p class="section-label">APPEARANCE</p><label class="theme-select-row"><span class="theme-preview" style="--a:${t.accent};--b:${t.accent2}"></span><span><strong>Preset theme</strong><small>Choose a complete color preset</small></span><select id="theme-select">${themes.map(x => `<option value="${esc(x.name)}" ${t.name === x.name ? "selected" : ""}>${esc(x.name)}</option>`).join("")}<option value="Custom" ${!themes.some(x => x.name === t.name) ? "selected" : ""}>Custom</option></select></label>
     <button id="edit-theme" class="settings-row"><span class="settings-icon color-wheel"></span><span><strong>Customize theme</strong><small>Colors, glow and glass blur</small></span>${icon("chevron")}</button></section>
     <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
     <section class="settings-section"><p class="section-label">WINDOW</p>${toggleRow("always-top", "Always on top", "Keep the phone above GTA", state.settings.alwaysOnTop)}${toggleRow("close-after", "Hide after play", "Return focus to GTA", state.settings.closeAfterPlay)}
-    <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/></label></section>
+    <label class="form-row range-setting"><span>Phone size <output>${Math.round(Math.max(1, state.settings.windowScale) * 100)}%</output></span><input id="window-scale" type="range" min="1" max="1.15" step="0.05" value="${Math.max(1, state.settings.windowScale)}"/><small>100% is the compact, fully readable size.</small></label></section>
     <section class="settings-section"><p class="section-label">MIGRATION</p><button id="import-legacy" class="settings-row"><span class="settings-icon">AHK</span><span><strong>Import MusicList.txt</strong><small>Bring your existing AHK library into this app</small></span>${icon("chevron")}</button></section>
     <button id="save-settings" class="primary-wide">Save settings</button></div>`;
-  document.querySelectorAll<HTMLButtonElement>("[data-theme]").forEach(btn => btn.onclick = async () => { const theme = themes.find(x => x.name === btn.dataset.theme); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); } });
+  document.querySelector<HTMLSelectElement>("#theme-select")!.onchange = async e => { const theme = themes.find(x => x.name === (e.target as HTMLSelectElement).value); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); } else { themeEditor(); } };
   document.querySelector<HTMLButtonElement>("#edit-theme")!.onclick = themeEditor;
-  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const value = +(e.target as HTMLInputElement).value; state.settings.windowScale = value; document.querySelector<HTMLOutputElement>(".range-setting output")!.value = `${Math.round(value * 100)}%`; document.querySelector<HTMLElement>(".phone-wrap")!.style.setProperty("--phone-scale", String(value)); };
+  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const value = +(e.target as HTMLInputElement).value; state.settings.windowScale = value; document.querySelector<HTMLOutputElement>(".range-setting output")!.value = `${Math.round(value * 100)}%`; resizePhone(); };
   document.querySelector<HTMLButtonElement>("#import-legacy")!.onclick = async () => { try { const count = await api.importLegacy(); state = await api.state(); selectedId = state.songs[0]?.id ?? ""; toast(`Imported ${count} songs`); render(); } catch (e) { errorToast(e); } };
   document.querySelector<HTMLButtonElement>("#save-settings")!.onclick = saveSettingsForm;
 }
@@ -254,7 +258,7 @@ function songActions(id: string): void {
   const song = state.songs.find(s => s.id === id); if (!song) return;
   modal(`<div class="modal-card action-sheet"><div class="sheet-grab"></div><div class="sheet-song"><div class="cover" style="--h:${hashHue(song.id)}">${esc(song.title[0] ?? "E")}</div><div><strong>${esc(song.title)}</strong><span>${esc(song.artist)}</span></div></div>
     <button id="action-play">${icon("play")} Play now</button><button id="action-edit">${icon("edit")} Edit song</button><button id="action-download">${icon("download")} Download</button><button id="action-delete" class="danger">${icon("trash")} Delete song</button><button data-close>Cancel</button></div>`);
-  document.querySelector<HTMLButtonElement>("#action-play")!.onclick = () => { selectedId = id; closeModal(); page = "player"; renderTabs(); render(); playSelected(); };
+  document.querySelector<HTMLButtonElement>("#action-play")!.onclick = () => { selectedId = id; closeModal(); render(); playSelected(); };
   document.querySelector<HTMLButtonElement>("#action-edit")!.onclick = () => { closeModal(); editSong(song); };
   document.querySelector<HTMLButtonElement>("#action-download")!.onclick = () => { closeModal(); downloadDialog(song.url); };
   document.querySelector<HTMLButtonElement>("#action-delete")!.onclick = async () => { if (confirm(`Delete ${song.title}?`)) { state.songs = state.songs.filter(s => s.id !== id); selectedId = state.songs[0]?.id ?? ""; await api.saveSongs(state.songs); closeModal(); render(); } };
@@ -304,6 +308,20 @@ function hashHue(value: string): number { let n = 0; for (const c of value) n = 
 function toast(message: string, danger = false): void { const el = document.querySelector<HTMLElement>("#toast")!; el.textContent = message; el.className = `toast show ${danger ? "danger" : ""}`; window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => el.classList.remove("show"), 3200); }
 function errorToast(error: unknown): void { toast(error instanceof Error ? error.message : String(error), true); }
 
+async function resizePhone(): Promise<void> {
+  const scale = Math.max(1, state.settings.windowScale || 1);
+  const width = (landscape ? 960 : 530) * scale;
+  const height = (landscape ? 530 : 960) * scale;
+  document.querySelector(".phone-wrap")?.classList.toggle("landscape", landscape);
+  try { await getCurrentWindow().setSize(new LogicalSize(width, height)); } catch { /* browser preview */ }
+}
+
+async function rotatePhone(): Promise<void> {
+  landscape = !landscape;
+  await resizePhone();
+  toast(landscape ? "Landscape view" : "Portrait view");
+}
+
 function startClock(): void { const update = () => { const el = document.querySelector("#clock"); if (el) el.textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date()); }; update(); window.setInterval(update, 30_000); }
 
 function startVisualizer(): void {
@@ -315,7 +333,7 @@ function startVisualizer(): void {
 
 async function init(): Promise<void> {
   try {
-    state = await api.state(); selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); shell();
+    state = await api.state(); state.settings.windowScale = Math.max(1, state.settings.windowScale || 1); selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); shell(); await resizePhone();
     await listen<string>("hotkey", async ({ payload }) => {
       if (!state.songs.length) return;
       const previousMode = state.settings.mode;
