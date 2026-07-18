@@ -7,8 +7,9 @@ import type { AppState, Page, SearchResult, Song, Theme } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let state: AppState;
-let page: Page = "library";
-let landscape = false;
+let page: Page = (["library","youtube","downloads","settings"].includes(localStorage.getItem("eclipse-page") ?? "") ? localStorage.getItem("eclipse-page") : "library") as Page;
+let landscape = localStorage.getItem("eclipse-orientation") === "landscape";
+let positionLocked = localStorage.getItem("eclipse-position-locked") === "true";
 let selectedId = "";
 let libraryQuery = "";
 let youtubeResults: SearchResult[] = [];
@@ -30,6 +31,7 @@ const icon = (name: string) => {
     download: '<path d="M12 3v12m-5-5l5 5 5-5M5 21h14"/>', plus: '<path d="M12 5v14M5 12h14"/>',
     edit: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L8 18l-4 1 1-4z"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2m3 0l-1 15H6L5 6m5 4v7m4-7v7"/>',
+    pin: '<path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 14v7"/>',
     chevron: '<path d="M9 18l6-6-6-6"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] ?? ""}</svg>`;
@@ -37,6 +39,14 @@ const icon = (name: string) => {
 
 const esc = (value: string) => value.replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]!));
 const currentSong = () => state.songs.find(s => s.id === selectedId) ?? state.songs[0];
+const youtubeThumbnail = (song: Song): string => {
+  if (song.artwork) return song.artwork;
+  try {
+    const url = new URL(song.url);
+    const id = url.hostname.includes("youtu.be") ? url.pathname.slice(1) : url.searchParams.get("v");
+    return id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : "";
+  } catch { return ""; }
+};
 
 function shell(): void {
   app.innerHTML = `
@@ -52,7 +62,7 @@ function shell(): void {
           <div class="appbar" data-tauri-drag-region>
             <div><p class="eyebrow">ECLIPSE</p><h1 id="page-title">Player</h1></div>
             <div class="app-actions">
-              <button class="icon-btn" id="always-on-top" title="Always on top">◇</button>
+              <button class="icon-btn" id="always-on-top" title="Pin phone above other windows">${icon("pin")}</button>
               <button class="icon-btn" id="hide-app" title="Hide phone">−</button>
               <button class="icon-btn danger-hover" id="close-app" title="Exit Eclipse Phone Player">×</button>
             </div>
@@ -76,10 +86,13 @@ function tab(id: Page, glyph: string, label: string): string {
 }
 
 function bindShell(): void {
-  document.querySelectorAll<HTMLElement>("[data-page]").forEach(el => el.onclick = () => { page = el.dataset.page as Page; renderTabs(); render(); });
+  document.querySelectorAll<HTMLElement>("[data-page]").forEach(el => el.onclick = () => { page = el.dataset.page as Page; localStorage.setItem("eclipse-page", page); renderTabs(); render(); });
   document.querySelector<HTMLButtonElement>("#hide-app")!.onclick = async () => { try { await getCurrentWindow().hide(); } catch { /* browser preview */ } };
   document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { try { await getCurrentWindow().close(); } catch { /* browser preview */ } };
   document.querySelector<HTMLButtonElement>("#rotate-phone")!.onclick = rotatePhone;
+  document.querySelector<HTMLElement>(".island")!.ondblclick = async () => { try { await getCurrentWindow().hide(); } catch { } };
+  document.querySelector<HTMLElement>(".phone")!.oncontextmenu = e => { e.preventDefault(); phoneMenu(); };
+  applyPositionLock();
   document.querySelector<HTMLButtonElement>("#always-on-top")!.onclick = async () => {
     state.settings.alwaysOnTop = !state.settings.alwaysOnTop;
     await api.saveSettings(state.settings); try { await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); } catch { }
@@ -108,11 +121,13 @@ function renderLibrary(view: HTMLElement): void {
   const songs = state.songs.filter(s => !q || `${s.artist} ${s.album} ${s.title}`.toLowerCase().includes(q));
   view.innerHTML = `
     <div class="searchbox">${icon("search")}<input id="library-search" value="${esc(libraryQuery)}" placeholder="Search your library"/><button id="add-song">${icon("plus")}</button></div>
-    <div class="section-row"><span>${songs.length} songs</span><div class="segmented"><button data-filter="all" class="active">All</button><button data-filter="favorites">Favorites</button></div></div>
+    <div class="library-toolbar"><label class="output-select"><span>PLAY USING</span><select id="library-mode"><option ${state.settings.mode === "Car" ? "selected" : ""}>Car</option><option ${state.settings.mode === "Speaker" ? "selected" : ""}>Speaker</option><option ${state.settings.mode === "TV" ? "selected" : ""}>TV</option></select></label><div class="segmented"><button data-filter="all" class="active">All</button><button data-filter="favorites">Favorites</button></div></div>
+    <div class="library-count"><span id="library-count">${songs.length}</span> songs <small>• Double-click a song to play it in GTA</small></div>
     <div id="song-list" class="song-list">${songs.length ? songs.map(songRow).join("") : empty("No matching songs", "Add a song or change your search.")}</div>
     <button class="floating-play" id="random-play">${icon("shuffle")} Random play</button>`;
   const input = document.querySelector<HTMLInputElement>("#library-search")!;
-  input.oninput = () => { libraryQuery = input.value; renderLibrary(view); };
+  input.oninput = () => { libraryQuery = input.value; filterLibraryRows(); };
+  document.querySelector<HTMLSelectElement>("#library-mode")!.onchange = async e => { state.settings.mode = (e.target as HTMLSelectElement).value as typeof state.settings.mode; await api.saveSettings(state.settings); toast(`${state.settings.mode} playback selected`); };
   document.querySelector<HTMLButtonElement>("#add-song")!.onclick = () => editSong();
   document.querySelector<HTMLButtonElement>("#random-play")!.onclick = () => { if (songs.length) { selectSong(songs[Math.floor(Math.random() * songs.length)].id); playSelected(); } };
   bindSongRows();
@@ -125,16 +140,30 @@ function renderLibrary(view: HTMLElement): void {
 
 function songRow(song: Song): string {
   const initials = `${song.artist[0] ?? "?"}${song.title[0] ?? ""}`.toUpperCase();
+  const thumbnail = youtubeThumbnail(song);
   return `<article class="song-row ${song.id === selectedId ? "selected" : ""}" data-id="${esc(song.id)}" data-favorite="${song.favorite}">
-    <div class="cover" style="--h:${hashHue(song.id)}">${initials}</div><div class="song-copy"><strong>${esc(song.title)}</strong><span>${esc(song.artist)}${song.album ? ` • ${esc(song.album)}` : ""}</span></div>
+    <div class="cover" style="--h:${hashHue(song.id)}">${thumbnail ? `<img src="${esc(thumbnail)}" alt="" loading="lazy" onerror="this.remove()"/>` : ""}<span>${initials}</span></div><div class="song-copy"><strong>${esc(song.title)}</strong><span>${esc(song.artist)}${song.album ? ` • ${esc(song.album)}` : ""}</span></div>
     <span class="duration">${esc(song.length || "—")}</span><button class="heart ${song.favorite ? "on" : ""}" data-heart="${esc(song.id)}">${icon("heart")}</button><button class="more" data-more="${esc(song.id)}">•••</button>
   </article>`;
 }
 
 function bindSongRows(): void {
-  document.querySelectorAll<HTMLElement>(".song-row").forEach(row => row.onclick = e => { if ((e.target as Element).closest("button")) return; selectSong(row.dataset.id!); render(); toast("Song selected — use ••• to play"); });
+  document.querySelectorAll<HTMLElement>(".song-row").forEach(row => {
+    row.onclick = e => { if ((e.target as Element).closest("button")) return; selectSong(row.dataset.id!); document.querySelectorAll(".song-row.selected").forEach(x => x.classList.remove("selected")); row.classList.add("selected"); };
+    row.ondblclick = e => { if ((e.target as Element).closest("button")) return; selectSong(row.dataset.id!); playSelected(); };
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-heart]").forEach(btn => btn.onclick = async () => { const song = state.songs.find(s => s.id === btn.dataset.heart); if (song) { song.favorite = !song.favorite; await api.saveSongs(state.songs); render(); } });
   document.querySelectorAll<HTMLButtonElement>("[data-more]").forEach(btn => btn.onclick = () => songActions(btn.dataset.more!));
+}
+
+function filterLibraryRows(): void {
+  const q = libraryQuery.trim().toLowerCase();
+  let visible = 0;
+  document.querySelectorAll<HTMLElement>(".song-row").forEach(row => {
+    const show = !q || (row.textContent ?? "").toLowerCase().includes(q);
+    row.hidden = !show; if (show) visible++;
+  });
+  const count = document.querySelector("#library-count"); if (count) count.textContent = String(visible);
 }
 
 function renderPlayer(view: HTMLElement): void {
@@ -215,7 +244,7 @@ function renderSettings(view: HTMLElement): void {
     <button id="edit-theme" class="settings-row"><span class="settings-icon color-wheel"></span><span><strong>Customize theme</strong><small>Colors, glow and glass blur</small></span>${icon("chevron")}</button></section>
     <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
     <section class="settings-section"><p class="section-label">WINDOW</p>${toggleRow("always-top", "Always on top", "Keep the phone above GTA", state.settings.alwaysOnTop)}${toggleRow("close-after", "Hide after play", "Return focus to GTA", state.settings.closeAfterPlay)}
-    <label class="form-row range-setting"><span>Phone size <output>${Math.round(Math.max(1, state.settings.windowScale) * 100)}%</output></span><input id="window-scale" type="range" min="1" max="1.15" step="0.05" value="${Math.max(1, state.settings.windowScale)}"/><small>100% is the compact, fully readable size.</small></label></section>
+    <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/><small>The layout condenses below 90% while text stays readable.</small></label></section>
     <section class="settings-section"><p class="section-label">MIGRATION</p><button id="import-legacy" class="settings-row"><span class="settings-icon">AHK</span><span><strong>Import MusicList.txt</strong><small>Bring your existing AHK library into this app</small></span>${icon("chevron")}</button></section>
     <button id="save-settings" class="primary-wide">Save settings</button></div>`;
   document.querySelector<HTMLSelectElement>("#theme-select")!.onchange = async e => { const theme = themes.find(x => x.name === (e.target as HTMLSelectElement).value); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); } else { themeEditor(); } };
@@ -246,7 +275,7 @@ function editSong(song?: Song): void {
   document.querySelector<HTMLFormElement>("#song-form")!.onsubmit = async e => {
     e.preventDefault(); const value = (id: string) => (document.querySelector<HTMLInputElement>(`#${id}`)!.value.trim());
     if (!value("artist") || !value("title") || !/^https?:\/\//i.test(value("url"))) { toast("Artist, title and a complete URL are required", true); return; }
-    const next: Song = { id: song?.id ?? crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked };
+    const next: Song = { id: song?.id ?? crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked, artwork: song?.artwork };
     if (song) state.songs[state.songs.findIndex(s => s.id === song.id)] = next; else state.songs.push(next);
     selectedId = next.id; await api.saveSongs(state.songs); closeModal(); toast(song ? "Song updated" : "Song added"); render();
   };
@@ -284,7 +313,7 @@ async function installDependency(name: string): Promise<void> {
   toast(`Installing ${name}…`); try { await api.installDependency(name); state = await api.state(); toast(`${name} installed`); render(); } catch (e) { errorToast(e); }
 }
 
-function addSearchResult(index: number): void { const r = youtubeResults[index]; editSong({ id: crypto.randomUUID(), artist: r.channel, album: "YouTube", title: r.title, url: r.url, length: r.length, favorite: false }); }
+function addSearchResult(index: number): void { const r = youtubeResults[index]; editSong({ id: crypto.randomUUID(), artist: r.channel, album: "YouTube", title: r.title, url: r.url, length: r.length, favorite: false, artwork: r.thumbnail }); }
 function selectSong(id: string): void { selectedId = id; }
 
 async function playSelected(): Promise<void> {
@@ -309,7 +338,7 @@ function toast(message: string, danger = false): void { const el = document.quer
 function errorToast(error: unknown): void { toast(error instanceof Error ? error.message : String(error), true); }
 
 async function resizePhone(): Promise<void> {
-  const scale = Math.max(1, state.settings.windowScale || 1);
+  const scale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1));
   const width = (landscape ? 960 : 530) * scale;
   const height = (landscape ? 530 : 960) * scale;
   document.querySelector(".phone-wrap")?.classList.toggle("landscape", landscape);
@@ -318,8 +347,26 @@ async function resizePhone(): Promise<void> {
 
 async function rotatePhone(): Promise<void> {
   landscape = !landscape;
+  localStorage.setItem("eclipse-orientation", landscape ? "landscape" : "portrait");
   await resizePhone();
   toast(landscape ? "Landscape view" : "Portrait view");
+}
+
+function applyPositionLock(): void {
+  document.querySelector(".phone-wrap")?.classList.toggle("position-locked", positionLocked);
+  document.querySelectorAll<HTMLElement>(".topbar,.appbar,.island").forEach(el => {
+    if (positionLocked) el.removeAttribute("data-tauri-drag-region"); else el.setAttribute("data-tauri-drag-region", "");
+  });
+}
+
+function phoneMenu(): void {
+  modal(`<div class="modal-card action-sheet"><div class="sheet-grab"></div><p class="eyebrow">PHONE CONTROLS</p><button id="quick-hide">− Hide phone</button><button id="quick-rotate">↻ ${landscape ? "Portrait" : "Landscape"} view</button><button id="quick-pin">${state.settings.alwaysOnTop ? "✓" : ""} Pin above other windows</button><button id="quick-lock">${positionLocked ? "✓" : ""} Lock phone position</button><button id="quick-settings">⚙ Settings</button><button id="quick-exit" class="danger">× Exit completely</button><button data-close>Cancel</button></div>`);
+  document.querySelector<HTMLButtonElement>("#quick-hide")!.onclick = async () => { await getCurrentWindow().hide(); };
+  document.querySelector<HTMLButtonElement>("#quick-rotate")!.onclick = async () => { closeModal(); await rotatePhone(); };
+  document.querySelector<HTMLButtonElement>("#quick-pin")!.onclick = async () => { state.settings.alwaysOnTop = !state.settings.alwaysOnTop; await api.saveSettings(state.settings); await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); closeModal(); };
+  document.querySelector<HTMLButtonElement>("#quick-lock")!.onclick = () => { positionLocked = !positionLocked; localStorage.setItem("eclipse-position-locked", String(positionLocked)); closeModal(); applyPositionLock(); toast(positionLocked ? "Phone position locked" : "Phone position unlocked"); };
+  document.querySelector<HTMLButtonElement>("#quick-settings")!.onclick = () => { closeModal(); page = "settings"; localStorage.setItem("eclipse-page", page); renderTabs(); render(); };
+  document.querySelector<HTMLButtonElement>("#quick-exit")!.onclick = async () => { await getCurrentWindow().close(); };
 }
 
 function startClock(): void { const update = () => { const el = document.querySelector("#clock"); if (el) el.textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date()); }; update(); window.setInterval(update, 30_000); }
@@ -333,7 +380,7 @@ function startVisualizer(): void {
 
 async function init(): Promise<void> {
   try {
-    state = await api.state(); state.settings.windowScale = Math.max(1, state.settings.windowScale || 1); selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); shell(); await resizePhone();
+    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); shell(); await resizePhone();
     await listen<string>("hotkey", async ({ payload }) => {
       if (!state.songs.length) return;
       const previousMode = state.settings.mode;

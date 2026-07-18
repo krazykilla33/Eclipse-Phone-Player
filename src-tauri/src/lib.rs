@@ -4,6 +4,7 @@ mod storage;
 mod windows_control;
 
 use models::{AppState, DependencyStatus, SearchResult, Settings, Song};
+use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -32,6 +33,20 @@ pub fn run() {
             else if shortcut==&ctrl{let _=app.emit("hotkey","random-car");}else if shortcut==&alt{let _=app.emit("hotkey","random-speaker");}else if shortcut==&shift{let _=app.emit("hotkey","random-tv");}
         }).build())
         .setup(|app| {
+            let show=MenuItem::with_id(app,"show","Show phone",true,None::<&str>)?;
+            let hide=MenuItem::with_id(app,"hide","Hide phone",true,None::<&str>)?;
+            let quit=MenuItem::with_id(app,"quit","Exit Eclipse Phone Player",true,None::<&str>)?;
+            let menu=Menu::with_items(app,&[&show,&hide,&quit])?;
+            let mut tray=TrayIconBuilder::new().tooltip("Eclipse Phone Player").menu(&menu).on_menu_event(|app,event| {
+                match event.id().as_ref() {
+                    "show"=>if let Some(w)=app.get_webview_window("main"){let _=w.show();let _=w.set_focus();},
+                    "hide"=>if let Some(w)=app.get_webview_window("main"){let _=w.hide();},
+                    "quit"=>app.exit(0),
+                    _=>{}
+                }
+            });
+            if let Some(icon)=app.default_window_icon(){tray=tray.icon(icon.clone());}
+            tray.build(app)?;
             let gs=app.global_shortcut();
             let _=gs.register(Shortcut::new(None,Code::F3));
             let _=gs.register(Shortcut::new(Some(Modifiers::CONTROL),Code::F3));

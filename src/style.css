@@ -25,3 +25,21 @@ button,input,select{font:inherit}
 .phone-wrap.landscape .settings-scroll>.settings-section{margin:0}.phone-wrap.landscape .settings-scroll>.primary-wide{grid-column:1/-1}
 .phone-wrap.landscape .page-library .song-list{display:grid;grid-template-columns:1fr 1fr}
 .phone-wrap.landscape .page-downloads .dependency-grid{grid-template-columns:1fr 1fr}
+.library-toolbar{min-height:54px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.library-count{font-size:11px;color:var(--muted);padding:0 3px 8px}.library-count small{opacity:.8}
+.output-select{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:8px;font-weight:800;letter-spacing:.12em}
+.output-select select{height:32px;min-width:104px;border:1px solid #ffffff18;border-radius:10px;background:var(--field);color:var(--text);padding:0 9px;outline:0;letter-spacing:0;font-weight:600;font-size:10px}
+.cover{position:relative;overflow:hidden}.cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1}.cover span{position:relative;z-index:0}
+@media(max-width:460px){
+  .phone-wrap{padding:5px}.phone{padding:6px;border-radius:58px}.screen{border-radius:52px}.metal-edge{border-radius:56px}
+  .topbar{height:49px;padding-left:26px;padding-right:29px}.island{width:108px;height:32px;top:10px}.island i{top:12px}
+  .appbar{height:54px;padding:0 20px}.appbar h1{font-size:21px}.icon-btn{width:31px;height:31px}
+  .view{height:calc(100% - 192px);padding-left:19px;padding-right:19px}.tabbar{left:14px;right:14px;height:67px;border-radius:25px}.tab{font-size:9px}
+  .song-row{grid-template-columns:42px 1fr auto 29px 25px;gap:7px;min-height:61px}.cover{width:42px;height:42px}
+  .song-copy strong,.result-copy strong{font-size:12px}.song-copy span,.result-copy span,.duration{font-size:10px}
+  .library-count small{display:none}.output-select>span{display:none}.segmented button{padding:6px 8px}
+  .settings-row strong,.toggle-row strong,.dependency-card strong{font-size:12px}.settings-row small,.toggle-row small,.dependency-card small,.section-label,.form-row{font-size:9px}
+}
+@media(max-height:760px) and (orientation:portrait){
+  .topbar{height:46px}.appbar{height:50px}.view{height:calc(100% - 181px)}.tabbar{height:62px}.settings-scroll{padding-bottom:78px}
+}
