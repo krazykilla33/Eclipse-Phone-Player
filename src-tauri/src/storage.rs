@@ -96,3 +96,12 @@ pub fn import_csv(path: &Path) -> Result<Vec<Song>, String> {
     }
     Ok(songs)
 }
+
+pub fn write_updated_csv(path:&Path,songs:&[Song])->Result<(),String>{
+    let temp=PathBuf::from(format!("{}.tmp",path.display()));let backup=PathBuf::from(format!("{}.bak",path.display()));
+    let mut writer=csv::WriterBuilder::new().has_headers(false).from_path(&temp).map_err(|e|e.to_string())?;
+    for song in songs{writer.write_record([song.artist.as_str(),song.album.as_str(),song.title.as_str(),song.url.as_str(),if song.favorite{"1"}else{"0"},song.length.as_str()]).map_err(|e|e.to_string())?;}
+    writer.flush().map_err(|e|e.to_string())?;
+    fs::copy(path,&backup).map_err(|e|format!("Could not back up MusicList.txt: {e}"))?;
+    fs::copy(&temp,path).map_err(|e|format!("Could not update MusicList.txt: {e}"))?;let _=fs::remove_file(temp);Ok(())
+}

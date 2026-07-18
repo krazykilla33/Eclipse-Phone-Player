@@ -1,4 +1,4 @@
-use crate::{models::SearchResult, storage};
+use crate::{models::{SearchResult,Song}, storage};
 use reqwest::header::ACCEPT_ENCODING;
 use std::{fs, io::{self, Cursor}, path::{Path, PathBuf}, process::Command};
 #[cfg(windows)]
@@ -31,6 +31,18 @@ pub fn metadata(app:&AppHandle,url:&str)->Result<SearchResult,String>{
     let line=String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").to_string();let f:Vec<_>=line.split('\t').collect();
     if f.len()<4{return Err("The media information response was incomplete.".into());}
     Ok(SearchResult{title:f[0].into(),channel:if f[1]=="NA"{"Unknown artist".into()}else{f[1].into()},length:if f[2]=="NA"{"—".into()}else{f[2].into()},url:if f[3]=="NA"{url.into()}else{f[3].into()},thumbnail:f.get(4).map(|x|x.to_string()).filter(|x|x!="NA")})
+}
+
+pub fn enrich_legacy_songs(app:&AppHandle,songs:&mut[Song])->Result<(),String>{
+    if find_tool(app,"ytdlp")?.is_none(){return Err("Install yt-dlp from Downloads before importing an old MusicList.txt so song lengths can be retrieved.".into());}
+    let imported_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+    for song in songs.iter_mut(){
+        if song.added_at.is_none(){song.added_at=Some(imported_at);}
+        if (song.length.trim().is_empty()||song.artwork.is_none()) {
+            if let Ok(info)=metadata(app,&song.url){if song.length.trim().is_empty(){song.length=info.length;if song.length=="—"{song.length.clear();}}if song.artwork.is_none(){song.artwork=info.thumbnail;}}
+        }
+    }
+    Ok(())
 }
 
 pub fn download_media(app:&AppHandle,url:&str,kind:&str)->Result<String,String>{let ytdlp=find_tool(app,"ytdlp")?.ok_or("yt-dlp is not installed")?;let settings=storage::load_settings(app)?;let root=if settings.download_folder.trim().is_empty(){storage::data_dir(app)?.join("Downloads")}else{PathBuf::from(settings.download_folder)};let target=root.join(if kind=="audio"{"Downloaded Audio"}else{"Downloaded Video"});fs::create_dir_all(&target).map_err(|e|e.to_string())?;let mut cmd=Command::new(ytdlp);cmd.args(["--no-playlist","--windows-filenames","-P"]).arg(&target).args(["-o","%(title).180B [%(id)s].%(ext)s"]);if kind=="audio"{let ffmpeg=find_tool(app,"ffmpeg")?.ok_or("FFmpeg is required for MP3 downloads")?;cmd.args(["-f","bestaudio","--extract-audio","--audio-format","mp3","--audio-quality","0","--ffmpeg-location"]).arg(ffmpeg);}else if let Some(ffmpeg)=find_tool(app,"ffmpeg")?{cmd.args(["-f","bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b","--merge-output-format","mp4","--ffmpeg-location"]).arg(ffmpeg);}else{cmd.args(["-f","b[ext=mp4]/b"]);}let status=hidden(&mut cmd).arg(url).status().map_err(|e|e.to_string())?;if !status.success(){return Err(format!("yt-dlp exited with code {:?}",status.code()));}Ok(target.to_string_lossy().to_string())}

@@ -1,33 +1,58 @@
 # Eclipse Phone Player
 
-A adjustble transparency, phone-shaped Windows desktop application that replaces the AutoHotkey GUI while preserving the original Eclipse Music Menu workflow.
+A transparent, phone-shaped Windows desktop application that replaces the AutoHotkey GUI while preserving the original Eclipse Music Menu workflow.
 
 ## Included
 
-- Frameless adjustble transparency phone window with a realistic metal-and-glass shell
-- Library search, favorites, add/edit/delete, random play
+- Frameless transparent phone window with a realistic metal-and-glass shell
+- Responsive portrait and landscape phone scaling
+- Library search, favorites, sorting, add/edit/delete and random play
 - Internal YouTube search through `yt-dlp`
 - MP3 and MP4 downloads through `yt-dlp` and FFmpeg
 - Car, Speaker and TV GTA output modes
 - Global `F3`, `Ctrl+F3`, `Alt+F3` and `Shift+F3` shortcuts
-- Automatic `MusicList.txt` migration
+- Automatic `MusicList.txt` migration with duration lookup and backup
 - Theme presets and a complete live custom-theme editor
 - Portable executable, NSIS setup executable and MSI configuration
 
 ## Theme customization
 
-Open **More → Customize theme**. Every theme can control the phone background, panels, fields, text, muted text, primary and secondary accents, selected rows, danger/success colors, glow strength and glass blur.
+Open **Settings → Customize theme**. Every theme can control the phone background, panels, fields, text, muted text, primary and secondary accents, selected rows, danger/success colors, glow strength and glass blur.
 
-Themes are stored in the user's application-data folder and do not modify the executable.
+Themes are stored in `settings.json` beside the executable and do not modify the executable.
+
+## Build on Windows
+
+Requirements:
+
+1. Node.js 22 or newer
+2. Rust stable
+3. Microsoft C++ Build Tools with the **Desktop development with C++** workload
+4. WebView2 (already present on current Windows 10 and Windows 11 installations)
+
+Then run:
+
+```powershell
+npm install
+npm run tauri build
+```
+
+Build outputs:
+
+- Portable app: `src-tauri\target\release\eclipse-phone-player.exe`
+- Setup executable: `src-tauri\target\release\bundle\nsis\`
+- MSI installer: `src-tauri\target\release\bundle\msi\`
+
+You can also push the source to GitHub and run **Actions → Build Windows App → Run workflow**. The workflow uploads the portable executable and both installers as downloadable artifacts.
 
 ## First run
 
-1. Open **settings** and confirm `GTA5.exe` (or your server's executable name).
+1. Open **Settings** and confirm `GTA5.exe` (or your server's executable name).
 2. Place the old `MusicList.txt` beside the portable executable and select **Import MusicList.txt**.
 3. Open **Downloads** to install `yt-dlp` and FFmpeg only when those features are needed.
-4. Select Car, Speaker or TV on the Player page.
+4. Select Car, Speaker or TV from the Library playback selector.
 
-The dependency buttons always ask before downloading anything. Installed tools are kept in the app's "Tools" folder  rather than beside the executable.
+The dependency buttons always ask before downloading anything. Installed tools are kept in the `tools` folder beside the executable.
 
 ## Data safety
 
