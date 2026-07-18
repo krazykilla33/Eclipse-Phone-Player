@@ -242,6 +242,12 @@ function renderSettings(view: HTMLElement): void {
   view.innerHTML = `<div class="settings-scroll">
     <section class="settings-section"><p class="section-label">APPEARANCE</p><label class="theme-select-row"><span class="theme-preview" style="--a:${t.accent};--b:${t.accent2}"></span><span><strong>Preset theme</strong><small>Choose a complete color preset</small></span><select id="theme-select">${themes.map(x => `<option value="${esc(x.name)}" ${t.name === x.name ? "selected" : ""}>${esc(x.name)}</option>`).join("")}<option value="Custom" ${!themes.some(x => x.name === t.name) ? "selected" : ""}>Custom</option></select></label>
     <button id="edit-theme" class="settings-row"><span class="settings-icon color-wheel"></span><span><strong>Customize theme</strong><small>Colors, glow and glass blur</small></span>${icon("chevron")}</button></section>
+    <section class="settings-section typography-settings"><p class="section-label">TYPOGRAPHY</p>
+    ${textSizeRow("headingScale","Headings","Page titles and prominent names",state.settings.headingScale)}
+    ${textSizeRow("bodyScale","Normal text","Song names, buttons and form text",state.settings.bodyScale)}
+    ${textSizeRow("smallScale","Small text","Metadata, hints and secondary labels",state.settings.smallScale)}
+    ${textSizeRow("navScale","Navigation","Bottom navigation labels",state.settings.navScale)}
+    <button id="reset-text-sizes" class="text-reset">Reset text sizes</button></section>
     <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
     <section class="settings-section"><p class="section-label">WINDOW</p>${toggleRow("always-top", "Always on top", "Keep the phone above GTA", state.settings.alwaysOnTop)}${toggleRow("close-after", "Hide after play", "Return focus to GTA", state.settings.closeAfterPlay)}
     <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/><small>The layout condenses below 90% while text stays readable.</small></label></section>
@@ -249,6 +255,11 @@ function renderSettings(view: HTMLElement): void {
     <button id="save-settings" class="primary-wide">Save settings</button></div>`;
   document.querySelector<HTMLSelectElement>("#theme-select")!.onchange = async e => { const theme = themes.find(x => x.name === (e.target as HTMLSelectElement).value); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); } else { themeEditor(); } };
   document.querySelector<HTMLButtonElement>("#edit-theme")!.onclick = themeEditor;
+  document.querySelectorAll<HTMLInputElement>("[data-text-scale]").forEach(input => input.oninput = () => {
+    const key=input.dataset.textScale as "headingScale"|"bodyScale"|"smallScale"|"navScale";
+    state.settings[key]=+input.value; input.parentElement!.querySelector("output")!.textContent=`${Math.round(+input.value*100)}%`; applyTextScales();
+  });
+  document.querySelector<HTMLButtonElement>("#reset-text-sizes")!.onclick = () => { state.settings.headingScale=state.settings.bodyScale=state.settings.smallScale=state.settings.navScale=1;applyTextScales();renderSettings(view); };
   document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const value = +(e.target as HTMLInputElement).value; state.settings.windowScale = value; document.querySelector<HTMLOutputElement>(".range-setting output")!.value = `${Math.round(value * 100)}%`; resizePhone(); };
   document.querySelector<HTMLButtonElement>("#import-legacy")!.onclick = async () => { try { const count = await api.importLegacy(); state = await api.state(); selectedId = state.songs[0]?.id ?? ""; toast(`Imported ${count} songs`); render(); } catch (e) { errorToast(e); } };
   document.querySelector<HTMLButtonElement>("#save-settings")!.onclick = saveSettingsForm;
@@ -256,6 +267,10 @@ function renderSettings(view: HTMLElement): void {
 
 function toggleRow(id: string, title: string, copy: string, checked: boolean): string {
   return `<label class="toggle-row"><span><strong>${title}</strong><small>${copy}</small></span><input id="${id}" type="checkbox" ${checked ? "checked" : ""}/><i></i></label>`;
+}
+
+function textSizeRow(key:string,title:string,copy:string,value:number):string {
+  return `<label class="text-size-row"><span><strong>${title}</strong><small>${copy}</small></span><output>${Math.round(value*100)}%</output><input data-text-scale="${key}" type="range" min="0.8" max="1.5" step="0.05" value="${value}"/></label>`;
 }
 
 async function saveSettingsForm(): Promise<void> {
@@ -268,16 +283,17 @@ async function saveSettingsForm(): Promise<void> {
   toast("Settings saved");
 }
 
-function editSong(song?: Song): void {
-  modal(`<form id="song-form" class="modal-card"><div class="modal-head"><div><p class="eyebrow">LIBRARY</p><h2>${song ? "Edit song" : "Add song"}</h2></div><button type="button" data-close>×</button></div>
+function editSong(song?: Song, addAsNew = false): void {
+  const editing = !!song && !addAsNew;
+  modal(`<form id="song-form" class="modal-card"><div class="modal-head"><div><p class="eyebrow">LIBRARY</p><h2>${editing ? "Edit song" : "Add song"}</h2></div><button type="button" data-close>×</button></div>
     ${field("Artist", "artist", song?.artist ?? "")}${field("Album", "album", song?.album ?? "")}${field("Song title", "title", song?.title ?? "")}${field("YouTube / media URL", "url", song?.url ?? "", "url")}${field("Length", "length", song?.length ?? "")}
-    <label class="check-line"><input id="favorite" type="checkbox" ${song?.favorite ? "checked" : ""}/> Favorite</label><button class="primary-wide">${song ? "Save changes" : "Add to library"}</button></form>`);
+    <label class="check-line"><input id="favorite" type="checkbox" ${song?.favorite ? "checked" : ""}/> Favorite</label><button class="primary-wide">${editing ? "Save changes" : "Add to library"}</button></form>`);
   document.querySelector<HTMLFormElement>("#song-form")!.onsubmit = async e => {
     e.preventDefault(); const value = (id: string) => (document.querySelector<HTMLInputElement>(`#${id}`)!.value.trim());
     if (!value("artist") || !value("title") || !/^https?:\/\//i.test(value("url"))) { toast("Artist, title and a complete URL are required", true); return; }
-    const next: Song = { id: song?.id ?? crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked, artwork: song?.artwork };
-    if (song) state.songs[state.songs.findIndex(s => s.id === song.id)] = next; else state.songs.push(next);
-    selectedId = next.id; await api.saveSongs(state.songs); closeModal(); toast(song ? "Song updated" : "Song added"); render();
+    const next: Song = { id: editing ? song!.id : crypto.randomUUID(), artist: value("artist"), album: value("album"), title: value("title"), url: value("url"), length: value("length"), favorite: document.querySelector<HTMLInputElement>("#favorite")!.checked, artwork: song?.artwork };
+    if (editing) state.songs[state.songs.findIndex(s => s.id === song!.id)] = next; else state.songs.push(next);
+    selectedId = next.id; await api.saveSongs(state.songs); closeModal(); toast(editing ? "Song updated" : "Song added to Library"); render();
   };
 }
 
@@ -313,7 +329,11 @@ async function installDependency(name: string): Promise<void> {
   toast(`Installing ${name}…`); try { await api.installDependency(name); state = await api.state(); toast(`${name} installed`); render(); } catch (e) { errorToast(e); }
 }
 
-function addSearchResult(index: number): void { const r = youtubeResults[index]; editSong({ id: crypto.randomUUID(), artist: r.channel, album: "YouTube", title: r.title, url: r.url, length: r.length, favorite: false, artwork: r.thumbnail }); }
+async function addSearchResult(index: number): Promise<void> {
+  const r = youtubeResults[index];
+  if (state.songs.some(song => song.url === r.url)) { toast("That video is already in your library"); return; }
+  editSong({ id: "", artist: r.channel, album: "YouTube", title: r.title, url: r.url, length: r.length, favorite: false, artwork: r.thumbnail }, true);
+}
 function selectSong(id: string): void { selectedId = id; }
 
 async function playSelected(): Promise<void> {
@@ -336,6 +356,14 @@ function loading(label: string): string { return `<div class="empty"><div class=
 function hashHue(value: string): number { let n = 0; for (const c of value) n = (n * 31 + c.charCodeAt(0)) % 360; return n; }
 function toast(message: string, danger = false): void { const el = document.querySelector<HTMLElement>("#toast")!; el.textContent = message; el.className = `toast show ${danger ? "danger" : ""}`; window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => el.classList.remove("show"), 3200); }
 function errorToast(error: unknown): void { toast(error instanceof Error ? error.message : String(error), true); }
+
+function applyTextScales():void {
+  const root=document.documentElement;
+  root.style.setProperty("--heading-scale",String(state.settings.headingScale||1));
+  root.style.setProperty("--body-scale",String(state.settings.bodyScale||1));
+  root.style.setProperty("--small-scale",String(state.settings.smallScale||1));
+  root.style.setProperty("--nav-scale",String(state.settings.navScale||1));
+}
 
 async function resizePhone(): Promise<void> {
   const scale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1));
@@ -380,7 +408,7 @@ function startVisualizer(): void {
 
 async function init(): Promise<void> {
   try {
-    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); shell(); await resizePhone();
+    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); state.settings.headingScale ||= 1; state.settings.bodyScale ||= 1; state.settings.smallScale ||= 1; state.settings.navScale ||= 1; selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); applyTextScales(); shell(); await resizePhone();
     await listen<string>("hotkey", async ({ payload }) => {
       if (!state.songs.length) return;
       const previousMode = state.settings.mode;

@@ -48,6 +48,10 @@ export interface Settings {
   downloadFolder: string;
   theme: Theme;
   windowScale: number;
+  headingScale: number;
+  bodyScale: number;
+  smallScale: number;
+  navScale: number;
 }
 
 export interface DependencyStatus {

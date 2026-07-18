@@ -3,9 +3,48 @@ use std::{fs, path::{Path, PathBuf}};
 use tauri::{AppHandle, Manager};
 
 pub fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+    let old_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    #[cfg(debug_assertions)]
+    { fs::create_dir_all(&old_dir).map_err(|e| e.to_string())?; return Ok(old_dir); }
+    #[cfg(not(debug_assertions))]
+    {
+        let exe=std::env::current_exe().map_err(|e|format!("Could not locate the application folder: {e}"))?;
+        let install_dir=exe.parent().ok_or("Could not locate the application folder")?.to_path_buf();
+        if !writable_dir(&install_dir){return Err(format!("The installation folder is not writable: {}. Reinstall Eclipse Phone Player in a folder your Windows account can write to.",install_dir.display()));}
+        move_existing_data(&old_dir,&install_dir)?;
+        Ok(install_dir)
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn writable_dir(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() { return false; }
+    let probe=path.join(".write-test");
+    fs::write(&probe,b"ok").and_then(|_|fs::remove_file(probe)).is_ok()
+}
+
+#[cfg(not(debug_assertions))]
+fn move_existing_data(from: &Path, to: &Path) -> Result<(),String> {
+    if from==to || !from.exists() { return Ok(()); }
+    for name in ["settings.json","library.json","settings.bak","library.bak"] {
+        let source=from.join(name);let target=to.join(name);
+        if source.exists()&&!target.exists(){move_path(&source,&target)?;}
+    }
+    for folder in ["tools","Downloads"] { let source=from.join(folder);if source.exists(){move_tree(&source,&to.join(folder))?;} }
+    let _=fs::remove_dir(from);
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn move_path(from:&Path,to:&Path)->Result<(),String>{
+    if fs::rename(from,to).is_ok(){return Ok(());}fs::copy(from,to).map_err(|e|e.to_string())?;fs::remove_file(from).map_err(|e|e.to_string())
+}
+
+#[cfg(not(debug_assertions))]
+fn move_tree(from:&Path,to:&Path)->Result<(),String>{
+    if !from.is_dir(){return Ok(());}fs::create_dir_all(to).map_err(|e|e.to_string())?;
+    for entry in fs::read_dir(from).map_err(|e|e.to_string())?{let entry=entry.map_err(|e|e.to_string())?;let source=entry.path();let target=to.join(entry.file_name());if source.is_dir(){move_tree(&source,&target)?;}else if !target.exists(){move_path(&source,&target)?;}else{fs::remove_file(source).map_err(|e|e.to_string())?;}}
+    fs::remove_dir(from).map_err(|e|e.to_string())?;Ok(())
 }
 
 pub fn tools_dir(app: &AppHandle) -> Result<PathBuf, String> {

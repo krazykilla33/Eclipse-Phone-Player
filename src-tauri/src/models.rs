@@ -40,6 +40,7 @@ impl Default for Theme {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct Settings {
     pub game_exe: String,
     pub open_chat_key: String,
@@ -51,11 +52,15 @@ pub struct Settings {
     pub download_folder: String,
     pub theme: Theme,
     pub window_scale: f32,
+    pub heading_scale: f32,
+    pub body_scale: f32,
+    pub small_scale: f32,
+    pub nav_scale: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { game_exe:"GTA5.exe".into(), open_chat_key:"t".into(), mode:"Car".into(), volume:100, always_on_top:true, close_after_play:true, start_minimized:false, download_folder:String::new(), theme:Theme::default(), window_scale:1.0 }
+        Self { game_exe:"GTA5.exe".into(), open_chat_key:"t".into(), mode:"Car".into(), volume:100, always_on_top:true, close_after_play:true, start_minimized:false, download_folder:String::new(), theme:Theme::default(), window_scale:1.0, heading_scale:1.0, body_scale:1.0, small_scale:1.0, nav_scale:1.0 }
     }
 }
 
