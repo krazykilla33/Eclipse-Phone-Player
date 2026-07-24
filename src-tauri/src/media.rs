@@ -5,6 +5,41 @@ use std::{fs, io::{self, Cursor}, path::{Path, PathBuf}, process::Command};
 use std::os::windows::process::CommandExt;
 use tauri::AppHandle;
 
+fn youtube_video_id(value:&str)->Option<String>{
+    let url=reqwest::Url::parse(value).ok()?;
+    let host=url.host_str()?;
+    if host.contains("youtu.be"){return url.path_segments()?.next().filter(|id|!id.is_empty()).map(str::to_string);}
+    if host.contains("youtube.com"){
+        if let Some(id)=url.query_pairs().find(|(key,_)|key=="v").map(|(_,value)|value.into_owned()){return Some(id);}
+        let parts:Vec<_>=url.path_segments()?.collect();
+        if matches!(parts.first(),Some(&"shorts")|Some(&"embed")){return parts.get(1).map(|id|id.to_string());}
+    }
+    None
+}
+
+fn format_duration(total:u64)->String{
+    let hours=total/3600;
+    let minutes=(total%3600)/60;
+    let seconds=total%60;
+    if hours>0{format!("{hours}:{minutes:02}:{seconds:02}")}else{format!("{minutes}:{seconds:02}")}
+}
+
+fn youtube_duration(id:&str)->Option<String>{
+    let html=reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36")
+        .build().ok()?
+        .get(format!("https://www.youtube.com/watch?v={id}"))
+        .header("Accept-Language","en-US,en;q=0.9")
+        .send().ok()?.error_for_status().ok()?.text().ok()?;
+    for marker in ["\"lengthSeconds\":\"","\\\"lengthSeconds\\\":\\\""]{
+        if let Some(start)=html.find(marker){
+            let digits:String=html[start+marker.len()..].chars().take_while(|c|c.is_ascii_digit()).collect();
+            if let Ok(seconds)=digits.parse::<u64>(){return Some(format_duration(seconds));}
+        }
+    }
+    None
+}
+
 fn hidden(command:&mut Command)->&mut Command{
     #[cfg(windows)]
     command.creation_flags(0x08000000);
@@ -22,6 +57,20 @@ pub fn search(app:&AppHandle,query:&str)->Result<Vec<SearchResult>,String>{let e
 
 pub fn metadata(app:&AppHandle,url:&str)->Result<SearchResult,String>{
     if !(url.starts_with("http://")||url.starts_with("https://")){return Err("Enter a complete http:// or https:// media URL.".into());}
+    if let Some(id)=youtube_video_id(url){
+        let endpoint=format!("https://www.youtube.com/oembed?url={}&format=json",urlencoding::encode(url));
+        let data:reqwest::blocking::Response=reqwest::blocking::Client::builder().user_agent("EclipsePhonePlayer/1.5").build().map_err(|e|e.to_string())?
+            .get(endpoint).send().map_err(|e|format!("Could not contact YouTube: {e}"))?
+            .error_for_status().map_err(|e|format!("YouTube returned an error: {e}"))?;
+        let data:serde_json::Value=data.json().map_err(|e|format!("Could not read YouTube's response: {e}"))?;
+        return Ok(SearchResult{
+            title:data["title"].as_str().unwrap_or("Untitled").into(),
+            channel:data["author_name"].as_str().unwrap_or("Unknown artist").into(),
+            length:youtube_duration(&id).unwrap_or_else(||"—".into()),
+            url:format!("https://www.youtube.com/watch?v={id}"),
+            thumbnail:data["thumbnail_url"].as_str().map(str::to_string).or_else(||Some(format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg")))
+        });
+    }
     let exe=find_tool(app,"ytdlp")?.ok_or("yt-dlp is not installed")?;
     let template="%(title)s\t%(uploader)s\t%(duration_string)s\t%(webpage_url)s\t%(thumbnail)s";
     let mut command=Command::new(exe);

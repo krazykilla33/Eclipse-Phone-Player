@@ -1,5 +1,5 @@
 import "./style.css";
-import { getCurrentWindow, LogicalSize, PhysicalPosition } from "@tauri-apps/api/window";
+import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./bridge";
 import { applyTheme, themes } from "./themes";
@@ -8,8 +8,8 @@ import type { AppState, Page, SearchResult, Song, Theme } from "./types";
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let state: AppState;
 let page: Page = (["library","youtube","downloads","settings"].includes(localStorage.getItem("eclipse-page") ?? "") ? localStorage.getItem("eclipse-page") : "library") as Page;
-let landscape = localStorage.getItem("eclipse-orientation") === "landscape";
-let positionLocked = localStorage.getItem("eclipse-position-locked") === "true";
+let landscape = false;
+let positionLocked = false;
 let selectedId = "";
 let libraryQuery = "";
 let youtubeResults: SearchResult[] = [];
@@ -17,6 +17,9 @@ let youtubeQuery = "";
 let busy = false;
 let toastTimer = 0;
 let positionSaveTimer = 0;
+let sizeSaveTimer = 0;
+let settingsSaveTimer = 0;
+let modalEscapeHandler: ((event: KeyboardEvent) => void) | null = null;
 
 const icon = (name: string) => {
   const icons: Record<string, string> = {
@@ -34,6 +37,9 @@ const icon = (name: string) => {
     trash: '<path d="M3 6h18M8 6V4h8v2m3 0l-1 15H6L5 6m5 4v7m4-7v7"/>',
     pin: '<path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6zM12 14v7"/>',
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7a2 2 0 002 2h3"/>',
+    car: '<path d="M5 17v2m14-2v2M3 14l2-6h14l2 6v4H3zM7 14h.01M17 14h.01M7 8l1.5-3h7L17 8"/>',
+    mouse: '<rect x="7" y="2" width="10" height="20" rx="5"/><path d="M12 2v6"/>',
+    keyboard: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h4M7 16h10"/>',
     chevron: '<path d="M9 18l6-6-6-6"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] ?? ""}</svg>`;
@@ -91,7 +97,10 @@ function tab(id: Page, glyph: string, label: string): string {
 function bindShell(): void {
   document.querySelectorAll<HTMLElement>("[data-page]").forEach(el => el.onclick = () => { page = el.dataset.page as Page; localStorage.setItem("eclipse-page", page); renderTabs(); render(); });
   document.querySelector<HTMLButtonElement>("#hide-app")!.onclick = async () => { try { await getCurrentWindow().hide(); } catch { /* browser preview */ } };
-  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => { if (state.settings.confirmBeforeExit && !confirm("Exit Eclipse Phone Player completely?")) return; try { await getCurrentWindow().close(); } catch { /* browser preview */ } };
+  document.querySelector<HTMLButtonElement>("#close-app")!.onclick = async () => {
+    if (state.settings.confirmBeforeExit && !await askConfirmation("Exit Eclipse Phone Player?", "The phone player will close completely.", "Exit")) return;
+    try { await getCurrentWindow().close(); } catch { /* browser preview */ }
+  };
   document.querySelector<HTMLButtonElement>("#rotate-phone")!.onclick = rotatePhone;
   document.querySelector<HTMLElement>(".island")!.ondblclick = async () => { try { await getCurrentWindow().hide(); } catch { } };
   document.querySelector<HTMLElement>(".phone")!.oncontextmenu = e => { e.preventDefault(); phoneMenu(); };
@@ -213,10 +222,11 @@ function queue(current: string): string {
 function renderYouTube(view: HTMLElement): void {
   view.innerHTML = `
     <form id="youtube-form" class="searchbox youtube-box">${icon("search")}<input id="youtube-query" value="${esc(youtubeQuery)}" placeholder="Songs, artists or videos"/><button class="search-submit" ${busy ? "disabled" : ""}>${busy ? "…" : "Search"}</button></form>
-    <div class="dependency-strip ${state.dependencies.ytdlp ? "ready" : "missing"}"><span><i></i>${state.dependencies.ytdlp ? "YouTube engine ready" : "yt-dlp is not installed"}</span>${state.dependencies.ytdlp ? "" : '<button id="install-ytdlp">Install safely</button>'}</div>
-    <div class="results">${busy ? loading("Searching YouTube") : youtubeResults.length ? youtubeResults.map(resultRow).join("") : empty("Search without leaving the app", "Results appear here and can be added, copied or downloaded.")}</div>`;
+    <div class="dependency-strip ${state.dependencies.ytdlp ? "ready" : "missing"}"><span><i></i>${state.dependencies.ytdlp ? "YouTube engine ready" : "yt-dlp is not installed"}</span><div class="dependency-actions">${state.dependencies.ytdlp ? "" : '<button id="install-ytdlp">Install safely</button>'}<button id="open-youtube">Open on YouTube</button></div></div>
+    <div class="results">${busy ? loading("Searching YouTube") : youtubeResults.length ? youtubeResults.map(resultRow).join("") : empty("Search YouTube", "Search directly in the phone, add songs to your Library, or download audio and video.")}</div>`;
   document.querySelector<HTMLFormElement>("#youtube-form")!.onsubmit = async e => { e.preventDefault(); youtubeQuery = document.querySelector<HTMLInputElement>("#youtube-query")!.value.trim(); if (!youtubeQuery) return; await searchYouTube(); };
-  document.querySelector<HTMLButtonElement>("#install-ytdlp")?.addEventListener("click", () => installDependency("ytdlp"));
+  document.querySelector<HTMLButtonElement>("#open-youtube")!.onclick=()=>api.openYouTubeSearch(youtubeQuery||document.querySelector<HTMLInputElement>("#youtube-query")!.value).catch(errorToast);
+  document.querySelector<HTMLButtonElement>("#install-ytdlp")?.addEventListener("click",()=>installDependency("ytdlp"));
   document.querySelectorAll<HTMLButtonElement>("[data-result-add]").forEach(btn => btn.onclick = () => addSearchResult(+btn.dataset.resultAdd!));
   document.querySelectorAll<HTMLButtonElement>("[data-result-copy]").forEach(btn => btn.onclick = async () => { await navigator.clipboard.writeText(youtubeResults[+btn.dataset.resultCopy!].url); toast("URL copied"); });
   document.querySelectorAll<HTMLButtonElement>("[data-result-download]").forEach(btn => btn.onclick = () => downloadDialog(youtubeResults[+btn.dataset.resultDownload!].url));
@@ -228,26 +238,26 @@ function resultRow(r: SearchResult, i: number): string {
 }
 
 async function searchYouTube(): Promise<void> {
-  if (!state.dependencies.ytdlp) { toast("Install yt-dlp first", true); return; }
+  if(!state.dependencies.ytdlp){toast("Install yt-dlp first",true);return;}
   busy = true; render();
   try { youtubeResults = await api.searchYouTube(youtubeQuery); if (!youtubeResults.length) toast("No results found"); }
   catch (e) { errorToast(e); } finally { busy = false; render(); }
 }
 
-function renderDownloads(view: HTMLElement): void {
-  view.innerHTML = `<div class="hero-card compact"><p class="eyebrow">MEDIA TOOLS</p><h2>Downloads</h2><p>Save audio or video from any selected library song or YouTube result.</p></div>
-    <div class="dependency-grid">${dependencyCard("ytdlp", "yt-dlp", "YouTube search and downloads", state.dependencies.ytdlp)}${dependencyCard("ffmpeg", "FFmpeg", "MP3 conversion and video merging", state.dependencies.ffmpeg)}</div>
-    <div class="settings-list"><button id="download-current" class="settings-row"><span class="settings-icon">${icon("download")}</span><span><strong>Download selected song</strong><small>${currentSong() ? esc(currentSong()!.title) : "No song selected"}</small></span>${icon("chevron")}</button>
+function renderDownloads(view:HTMLElement):void {
+  view.innerHTML=`<div class="hero-card compact"><p class="eyebrow">MEDIA TOOLS</p><h2>Downloads</h2><p>Save audio or video from any selected Library song or YouTube result.</p></div>
+    <div class="dependency-grid">${dependencyCard("ytdlp","yt-dlp","YouTube search and downloads",state.dependencies.ytdlp)}${dependencyCard("ffmpeg","FFmpeg + FFprobe","MP3 conversion and video merging",state.dependencies.ffmpeg&&state.dependencies.ffprobe)}</div>
+    <div class="settings-list"><button id="download-current" class="settings-row"><span class="settings-icon">${icon("download")}</span><span><strong>Download selected song</strong><small>${currentSong()?esc(currentSong()!.title):"No song selected"}</small></span>${icon("chevron")}</button>
     <button id="open-audio" class="settings-row"><span class="settings-icon">♫</span><span><strong>Downloaded Audio</strong><small>Open the audio folder</small></span>${icon("chevron")}</button>
     <button id="open-video" class="settings-row"><span class="settings-icon">▻</span><span><strong>Downloaded Video</strong><small>Open the video folder</small></span>${icon("chevron")}</button></div>`;
-  document.querySelectorAll<HTMLButtonElement>("[data-install]").forEach(btn => btn.onclick = () => installDependency(btn.dataset.install!));
-  document.querySelector<HTMLButtonElement>("#download-current")!.onclick = () => currentSong() ? downloadDialog(currentSong()!.url) : toast("Select a song first", true);
-  document.querySelector<HTMLButtonElement>("#open-audio")!.onclick = () => api.openDownloads("audio").catch(errorToast);
-  document.querySelector<HTMLButtonElement>("#open-video")!.onclick = () => api.openDownloads("video").catch(errorToast);
+  document.querySelectorAll<HTMLButtonElement>("[data-install]").forEach(button=>button.onclick=()=>installDependency(button.dataset.install!));
+  document.querySelector<HTMLButtonElement>("#download-current")!.onclick=()=>currentSong()?downloadDialog(currentSong()!.url):toast("Select a song first",true);
+  document.querySelector<HTMLButtonElement>("#open-audio")!.onclick=()=>api.openDownloads("audio").catch(errorToast);
+  document.querySelector<HTMLButtonElement>("#open-video")!.onclick=()=>api.openDownloads("video").catch(errorToast);
 }
 
-function dependencyCard(id: string, title: string, copy: string, ready: boolean): string {
-  return `<article class="dependency-card"><div class="dependency-badge ${ready ? "ready" : ""}">${ready ? "✓" : "!"}</div><div><strong>${title}</strong><small>${copy}</small></div><button data-install="${id}" ${ready ? "disabled" : ""}>${ready ? "Ready" : "Install"}</button></article>`;
+function dependencyCard(id:string,title:string,copy:string,ready:boolean):string {
+  return `<article class="dependency-card"><div class="dependency-badge ${ready?"ready":""}">${ready?"✓":"!"}</div><div><strong>${title}</strong><small>${copy}</small></div><button data-install="${id}" ${ready?"disabled":""}>${ready?"Ready":"Install"}</button></article>`;
 }
 
 function renderSettings(view: HTMLElement): void {
@@ -259,29 +269,52 @@ function renderSettings(view: HTMLElement): void {
     ${textSizeRow("headingScale","Headings","Page titles and prominent names",state.settings.headingScale)}
     ${textSizeRow("bodyScale","Normal text","Song names, buttons and form text",state.settings.bodyScale)}
     ${textSizeRow("smallScale","Small text","Metadata, hints and secondary labels",state.settings.smallScale)}
-    ${textSizeRow("navScale","Navigation","Bottom navigation labels",state.settings.navScale)}
+    ${textSizeRow("navScale","Navigation","Bottom navigation Buttons",state.settings.navScale)}
     <button id="reset-text-sizes" class="text-reset">Reset text sizes</button></section>
-    <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Default playback mode</span><select id="default-playback-mode"><option ${state.settings.defaultPlaybackMode==="Car"?"selected":""}>Car</option><option ${state.settings.defaultPlaybackMode==="Speaker"?"selected":""}>Speaker</option><option ${state.settings.defaultPlaybackMode==="TV"?"selected":""}>TV</option></select></label><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app folder"/></label></section>
+    <section class="settings-section"><p class="section-label">PLAYBACK</p><label class="form-row"><span>Default playback mode</span><select id="default-playback-mode"><option ${state.settings.defaultPlaybackMode==="Car"?"selected":""}>Car</option><option ${state.settings.defaultPlaybackMode==="Speaker"?"selected":""}>Speaker</option><option ${state.settings.defaultPlaybackMode==="TV"?"selected":""}>TV</option></select></label><label class="form-row"><span>Game executable</span><input id="game-exe" value="${esc(state.settings.gameExe)}"/></label><label class="form-row"><span>Chat key</span><input id="chat-key" maxlength="1" value="${esc(state.settings.openChatKey)}"/></label><label class="form-row"><span>Download folder</span><input id="download-folder" value="${esc(state.settings.downloadFolder)}" placeholder="Default app data folder"/></label>
+    <div class="hotkey-settings"><p class="section-label">HOTKEYS</p><p class="hotkey-help">Click a shortcut, then press the new key combination.</p>
+    ${hotkeyRow("show-hide-hotkey","Show or hide phone",state.settings.showHideHotkey)}
+    ${hotkeyRow("random-car-hotkey","Random song • Car",state.settings.randomCarHotkey)}
+    ${hotkeyRow("random-speaker-hotkey","Random song • Speaker",state.settings.randomSpeakerHotkey)}
+    ${hotkeyRow("random-tv-hotkey","Random song • TV",state.settings.randomTvHotkey)}
+    <button id="reset-hotkeys" class="text-reset hotkey-reset">Restore default hotkeys</button></div></section>
     <section class="settings-section"><p class="section-label">WINDOW</p>${toggleRow("always-top", "Always on top", "Keep the phone above GTA", state.settings.alwaysOnTop)}${toggleRow("close-after", "Hide after play", "Return focus to GTA", state.settings.closeAfterPlay)}
-    ${toggleRow("confirm-exit", "Confirm before exit", "Ask before the × button closes the app", state.settings.confirmBeforeExit)}${toggleRow("remember-position", "Remember window position", "Restore the phone to its previous screen location", state.settings.rememberWindowPosition)}
+    ${toggleRow("confirm-exit", "Confirm before exit", "Ask before the × button closes the app", state.settings.confirmBeforeExit)}${toggleRow("remember-position", "Remember window and size", "Restore the phone's last position, size and orientation", state.settings.rememberWindowPosition)}
+    ${toggleRow("lock-position", "Lock phone position", "Prevent the phone from being dragged accidentally", positionLocked)}
     <label class="form-row"><span>Startup orientation</span><select id="startup-orientation"><option ${state.settings.orientation==="Portrait"?"selected":""}>Portrait</option><option ${state.settings.orientation==="Landscape"?"selected":""}>Landscape</option></select></label>
     <label class="form-row"><span>Default page</span><select id="default-page"><option ${state.settings.defaultPage==="Library"?"selected":""}>Library</option><option ${state.settings.defaultPage==="YouTube"?"selected":""}>YouTube</option><option ${state.settings.defaultPage==="Downloads"?"selected":""}>Downloads</option><option ${state.settings.defaultPage==="Settings"?"selected":""}>Settings</option></select></label>
     <label class="form-row"><span>Default library sorting</span><select id="default-library-sort">${(["Artist","Title","Album","Recently Added","Favorites First"] as const).map(value=>`<option ${state.settings.librarySort===value?"selected":""}>${value}</option>`).join("")}</select></label>
     <label class="form-row range-setting opacity-setting"><span>Phone opacity <output>${Math.round(state.settings.windowOpacity*100)}%</output></span><input id="window-opacity" type="range" min="0.55" max="1" step="0.05" value="${state.settings.windowOpacity}"/><small>Changes the transparency of the complete phone.</small></label>
-    <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/><small>The layout condenses below 90% while text stays readable.</small></label></section>
-    <section class="settings-section"><p class="section-label">MIGRATION</p><button id="import-legacy" class="settings-row"><span class="settings-icon">AHK</span><span><strong>Import MusicList.txt</strong><small>Bring your existing AHK library into this app</small></span>${icon("chevron")}</button></section>
-    <button id="save-settings" class="primary-wide">Save settings</button></div>`;
-  document.querySelector<HTMLSelectElement>("#theme-select")!.onchange = async e => { const theme = themes.find(x => x.name === (e.target as HTMLSelectElement).value); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); } else { themeEditor(); } };
+    <label class="form-row range-setting"><span>Phone size <output>${Math.round(state.settings.windowScale * 100)}%</output></span><input id="window-scale" type="range" min="0.75" max="1.15" step="0.05" value="${state.settings.windowScale}"/><small>Changes the size of the phone.</small></label></section>
+    <section class="settings-section"><p class="section-label">CLOCK</p>
+    <label class="form-row"><span>Time format</span><select id="time-format"><option value="12-hour" ${state.settings.timeFormat==="12-hour"?"selected":""}>12-hour</option><option value="24-hour" ${state.settings.timeFormat==="24-hour"?"selected":""}>24-hour</option></select><small>Choose how the status-bar clock is displayed.</small></label>
+    <label class="form-row"><span>Time zone</span><select id="time-zone"><option value="System" ${state.settings.timeZone==="System"?"selected":""}>System time</option><option value="UTC" ${state.settings.timeZone==="UTC"?"selected":""}>UTC time</option></select><small>Use your computer's time zone or Coordinated Universal Time.</small></label></section>
+    <section class="settings-section"><p class="section-label">DATA</p><button id="open-data-folder" class="settings-row"><span class="settings-icon">📁</span><span><strong>Open data folder</strong><small>opens the folder where the App and data is stored</small></span>${icon("chevron")}</button><button id="import-legacy" class="settings-row"><span class="settings-icon">AHK</span><span><strong>Import MusicList.txt</strong><small>Bring your existing AHK library into this app</small></span>${icon("chevron")}</button></section>
+    <section class="settings-section"><p class="section-label">HELP</p><button id="quick-guide" class="settings-row"><span class="settings-icon">${icon("play")}</span><span><strong>Quick guide</strong><small>Review the phone controls and playback modes</small></span>${icon("chevron")}</button></section>
+    </div>`;
+  document.querySelector<HTMLSelectElement>("#theme-select")!.onchange = async e => { const theme = themes.find(x => x.name === (e.target as HTMLSelectElement).value); if (theme) { state.settings.theme = structuredClone(theme); applyTheme(theme); await api.saveSettings(state.settings); render(); toast("Settings saved"); } else { themeEditor(); } };
   document.querySelector<HTMLButtonElement>("#edit-theme")!.onclick = themeEditor;
   document.querySelectorAll<HTMLInputElement>("[data-text-scale]").forEach(input => input.oninput = () => {
     const key=input.dataset.textScale as "headingScale"|"bodyScale"|"smallScale"|"navScale";
-    state.settings[key]=+input.value; input.parentElement!.querySelector("output")!.textContent=`${Math.round(+input.value*100)}%`; applyTextScales();
+    state.settings[key]=+input.value; input.parentElement!.querySelector("output")!.textContent=`${Math.round(+input.value*100)}%`; applyTextScales(); scheduleSettingsSave();
   });
-  document.querySelector<HTMLButtonElement>("#reset-text-sizes")!.onclick = () => { state.settings.headingScale=state.settings.bodyScale=state.settings.smallScale=state.settings.navScale=1;applyTextScales();renderSettings(view); };
-  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value; state.settings.windowScale = value; input.parentElement!.querySelector("output")!.textContent = `${Math.round(value * 100)}%`; resizePhone(); };
-  document.querySelector<HTMLInputElement>("#window-opacity")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value;state.settings.windowOpacity=value;input.parentElement!.querySelector("output")!.textContent=`${Math.round(value*100)}%`;applyWindowOpacity(); };
-  document.querySelector<HTMLButtonElement>("#import-legacy")!.onclick = async e => { const button=e.currentTarget as HTMLButtonElement;button.disabled=true;button.querySelector("strong")!.textContent="Retrieving song lengths…";toast("Updating MusicList.txt • this may take a few minutes");try { const count = await api.importLegacy(); state = await api.state(); selectedId = state.songs[0]?.id ?? ""; render();toast(`Imported ${count} songs • MusicList.txt updated`); } catch (error) { errorToast(error);button.disabled=false;button.querySelector("strong")!.textContent="Import MusicList.txt"; } };
-  document.querySelector<HTMLButtonElement>("#save-settings")!.onclick = saveSettingsForm;
+  document.querySelector<HTMLButtonElement>("#reset-text-sizes")!.onclick = async () => { state.settings.headingScale=state.settings.bodyScale=state.settings.smallScale=state.settings.navScale=1;applyTextScales();await api.saveSettings(state.settings);renderSettings(view);toast("Settings saved"); };
+  document.querySelector<HTMLInputElement>("#window-scale")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value; state.settings.windowScale = value; input.parentElement!.querySelector("output")!.textContent = `${Math.round(value * 100)}%`; resizePhone(); scheduleSettingsSave(); };
+  document.querySelector<HTMLInputElement>("#window-opacity")!.oninput = e => { const input=e.target as HTMLInputElement,value=+input.value;state.settings.windowOpacity=value;input.parentElement!.querySelector("output")!.textContent=`${Math.round(value*100)}%`;applyWindowOpacity();scheduleSettingsSave(); };
+  document.querySelector<HTMLButtonElement>("#import-legacy")!.onclick = async e => { const button=e.currentTarget as HTMLButtonElement;button.disabled=true;button.querySelector("strong")!.textContent="Importing…";try { const count = await api.importLegacy(); state = await api.state(); selectedId = state.songs[0]?.id ?? ""; render();toast(`Imported ${count} songs`); } catch (error) { errorToast(error);button.disabled=false;button.querySelector("strong")!.textContent="Import MusicList.txt"; } };
+  document.querySelector<HTMLButtonElement>("#open-data-folder")!.onclick = () => api.openDataFolder().catch(errorToast);
+  document.querySelector<HTMLButtonElement>("#quick-guide")!.onclick = showQuickGuide;
+  document.querySelectorAll<HTMLInputElement>("[data-hotkey]").forEach(bindHotkeyRecorder);
+  document.querySelector<HTMLButtonElement>("#reset-hotkeys")!.onclick = async () => {
+    document.querySelector<HTMLInputElement>("#show-hide-hotkey")!.value="F3";
+    document.querySelector<HTMLInputElement>("#random-car-hotkey")!.value="Ctrl+F3";
+    document.querySelector<HTMLInputElement>("#random-speaker-hotkey")!.value="Alt+F3";
+    document.querySelector<HTMLInputElement>("#random-tv-hotkey")!.value="Shift+F3";
+    await saveSettingsForm();
+  };
+  ["always-top","close-after","confirm-exit","remember-position","lock-position"].forEach(id => document.querySelector<HTMLInputElement>(`#${id}`)!.onchange = saveSettingsForm);
+  ["startup-orientation","default-page","default-library-sort","default-playback-mode","time-format","time-zone"].forEach(id => document.querySelector<HTMLSelectElement>(`#${id}`)!.onchange = saveSettingsForm);
+  ["game-exe","chat-key","download-folder"].forEach(id => document.querySelector<HTMLInputElement>(`#${id}`)!.onchange = saveSettingsForm);
 }
 
 function toggleRow(id: string, title: string, copy: string, checked: boolean): string {
@@ -290,6 +323,33 @@ function toggleRow(id: string, title: string, copy: string, checked: boolean): s
 
 function textSizeRow(key:string,title:string,copy:string,value:number):string {
   return `<label class="text-size-row"><span><strong>${title}</strong><small>${copy}</small></span><output>${Math.round(value*100)}%</output><input data-text-scale="${key}" type="range" min="0.8" max="1.5" step="0.05" value="${value}"/></label>`;
+}
+
+function hotkeyRow(id:string,title:string,value:string):string {
+  return `<label class="hotkey-row"><span>${title}</span><input id="${id}" data-hotkey readonly value="${esc(value)}" aria-label="${esc(title)}"/></label>`;
+}
+
+function bindHotkeyRecorder(input:HTMLInputElement):void {
+  input.onfocus=()=>input.classList.add("recording");
+  input.onblur=()=>input.classList.remove("recording");
+  input.onkeydown=async event=>{
+    event.preventDefault();
+    event.stopPropagation();
+    if(event.key==="Escape"){input.blur();return;}
+    if(["Control","Alt","Shift","Meta"].includes(event.key))return;
+    const aliases:Record<string,string>={" ":"Space",ArrowUp:"ArrowUp",ArrowDown:"ArrowDown",ArrowLeft:"ArrowLeft",ArrowRight:"ArrowRight",PageUp:"PageUp",PageDown:"PageDown"};
+    let key=aliases[event.key]||event.key;
+    if(key.length===1)key=key.toUpperCase();
+    const parts:string[]=[];
+    if(event.ctrlKey)parts.push("Ctrl");
+    if(event.altKey)parts.push("Alt");
+    if(event.shiftKey)parts.push("Shift");
+    if(event.metaKey)parts.push("Super");
+    parts.push(key);
+    input.value=parts.join("+");
+    input.blur();
+    await saveSettingsForm();
+  };
 }
 
 function quickAddSong():void {
@@ -302,13 +362,16 @@ function quickAddSong():void {
     try{
       const info=await api.fetchMetadata(url);
       if(state.songs.some(song=>song.url===info.url)){toast("That song is already in your Library",true);button.disabled=false;button.textContent="Add to Library";return;}
-      const song:Song={id:crypto.randomUUID(),artist:info.channel||"Unknown artist",album:/youtu(?:\.be|be\.com)/i.test(info.url)?"YouTube":"Media",title:info.title||"Untitled",url:info.url||url,length:info.length||"—",favorite:false,artwork:info.thumbnail,addedAt:Date.now()};
-      state.songs.push(song);selectedId=song.id;await api.saveSongs(state.songs);closeModal();toast(`${song.title} added to Library`);render();
+      const song:Song={id:"",artist:info.channel||"Unknown artist",album:/youtu(?:\.be|be\.com)/i.test(info.url)?"YouTube":"Media",title:info.title||"Untitled",url:info.url||url,length:info.length||"—",favorite:false,artwork:info.thumbnail,addedAt:Date.now()};
+      closeModal();
+      editSong(song, true);
     }catch(error){errorToast(error);button.disabled=false;button.textContent="Add to Library";}
   };
 }
 
 async function saveSettingsForm(): Promise<void> {
+  window.clearTimeout(settingsSaveTimer);
+  const previous=structuredClone(state.settings);
   state.settings.gameExe = document.querySelector<HTMLInputElement>("#game-exe")!.value.trim() || "GTA5.exe";
   state.settings.openChatKey = document.querySelector<HTMLInputElement>("#chat-key")!.value.trim() || "t";
   state.settings.downloadFolder = document.querySelector<HTMLInputElement>("#download-folder")!.value.trim();
@@ -316,12 +379,30 @@ async function saveSettingsForm(): Promise<void> {
   state.settings.closeAfterPlay = document.querySelector<HTMLInputElement>("#close-after")!.checked;
   state.settings.confirmBeforeExit = document.querySelector<HTMLInputElement>("#confirm-exit")!.checked;
   state.settings.rememberWindowPosition = document.querySelector<HTMLInputElement>("#remember-position")!.checked;
+  positionLocked = document.querySelector<HTMLInputElement>("#lock-position")!.checked;
+  state.settings.positionLocked = positionLocked;
   state.settings.orientation = document.querySelector<HTMLSelectElement>("#startup-orientation")!.value as typeof state.settings.orientation;
   state.settings.defaultPage = document.querySelector<HTMLSelectElement>("#default-page")!.value as typeof state.settings.defaultPage;
   state.settings.librarySort = document.querySelector<HTMLSelectElement>("#default-library-sort")!.value as typeof state.settings.librarySort;
   state.settings.defaultPlaybackMode = document.querySelector<HTMLSelectElement>("#default-playback-mode")!.value as typeof state.settings.defaultPlaybackMode;
-  await api.saveSettings(state.settings); try { await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); } catch { }
-  toast("Settings saved");
+  state.settings.timeFormat = document.querySelector<HTMLSelectElement>("#time-format")!.value as typeof state.settings.timeFormat;
+  state.settings.timeZone = document.querySelector<HTMLSelectElement>("#time-zone")!.value as typeof state.settings.timeZone;
+  state.settings.showHideHotkey = document.querySelector<HTMLInputElement>("#show-hide-hotkey")!.value;
+  state.settings.randomCarHotkey = document.querySelector<HTMLInputElement>("#random-car-hotkey")!.value;
+  state.settings.randomSpeakerHotkey = document.querySelector<HTMLInputElement>("#random-speaker-hotkey")!.value;
+  state.settings.randomTvHotkey = document.querySelector<HTMLInputElement>("#random-tv-hotkey")!.value;
+  try{
+    await api.saveSettings(state.settings);
+    try { await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); } catch { }
+    applyPositionLock();
+    updateClock();
+    toast("Settings saved");
+  }catch(error){
+    state.settings=previous;
+    positionLocked=previous.positionLocked;
+    renderSettings(document.querySelector<HTMLElement>("#view")!);
+    errorToast(error);
+  }
 }
 
 function editSong(song?: Song, addAsNew = false): void {
@@ -355,7 +436,33 @@ function songActions(id: string): void {
   document.querySelector<HTMLButtonElement>("#action-copy")!.onclick = async () => { await api.copyUrl(song.url); closeModal(); toast("Song URL copied"); };
   document.querySelector<HTMLButtonElement>("#action-edit")!.onclick = () => { closeModal(); editSong(song); };
   document.querySelector<HTMLButtonElement>("#action-download")!.onclick = () => { closeModal(); downloadDialog(song.url); };
-  document.querySelector<HTMLButtonElement>("#action-delete")!.onclick = async () => { if (confirm(`Delete ${song.title}?`)) { state.songs = state.songs.filter(s => s.id !== id); selectedId = state.songs[0]?.id ?? ""; await api.saveSongs(state.songs); closeModal(); render(); } };
+  document.querySelector<HTMLButtonElement>("#action-delete")!.onclick = async () => {
+    if (!await askConfirmation(`Delete ${song.title}?`, "This song will be removed from your Library.", "Delete")) return;
+    state.songs = state.songs.filter(s => s.id !== id);
+    selectedId = state.songs[0]?.id ?? "";
+    await api.saveSongs(state.songs);
+    closeModal();
+    render();
+    toast(`${song.title} deleted`);
+  };
+}
+
+function downloadDialog(url:string):void {
+  modal(`<div class="modal-card download-modal"><div class="modal-head"><div><p class="eyebrow">DOWNLOAD</p><h2>Choose format</h2></div><button type="button" data-close>×</button></div><button class="download-choice" data-kind="audio"><b>MP3 Audio</b><span>Best audio quality • requires FFmpeg</span></button><button class="download-choice" data-kind="video"><b>MP4 Video</b><span>Best compatible video quality</span></button></div>`);
+  document.querySelectorAll<HTMLButtonElement>("[data-kind]").forEach(button=>button.onclick=async()=>{
+    closeModal();
+    toast("Download started");
+    try{const path=await api.downloadMedia(url,button.dataset.kind as "audio"|"video");toast(`Saved to ${path}`);}
+    catch(error){errorToast(error);}
+  });
+}
+
+async function installDependency(name:string):Promise<void> {
+  const label=name==="ytdlp"?"yt-dlp":"FFmpeg and FFprobe";
+  if(!await askConfirmation(`Install ${label}?`,`The app will download ${label} into its private tools folder.`,`Install`))return;
+  toast(`Installing ${label}…`);
+  try{await api.installDependency(name);state=await api.state();toast(`${label} installed`);render();}
+  catch(error){errorToast(error);}
 }
 
 function themeEditor(): void {
@@ -366,16 +473,6 @@ function themeEditor(): void {
   document.querySelectorAll<HTMLInputElement>("[data-color]").forEach(input => input.oninput = () => { (t as unknown as Record<string,string>)[input.dataset.color!] = input.value; t.name = "Custom"; applyTheme(t); });
   document.querySelectorAll<HTMLInputElement>("[data-number]").forEach(input => input.oninput = () => { (t as unknown as Record<string,number>)[input.dataset.number!] = +input.value; input.parentElement!.querySelector("output")!.textContent = input.dataset.number === "blur" ? `${input.value}px` : `${input.value}%`; applyTheme(t); });
   document.querySelector<HTMLFormElement>("#theme-form")!.onsubmit = async e => { e.preventDefault(); t.name = "Custom"; await api.saveSettings(state.settings); closeModal(); toast("Custom theme saved"); render(); };
-}
-
-function downloadDialog(url: string): void {
-  modal(`<div class="modal-card"><div class="modal-head"><div><p class="eyebrow">DOWNLOAD</p><h2>Choose format</h2></div><button data-close>×</button></div><button class="download-choice" data-kind="audio"><b>MP3 Audio</b><span>Best audio quality • requires FFmpeg</span></button><button class="download-choice" data-kind="video"><b>MP4 Video</b><span>Best compatible video quality</span></button></div>`);
-  document.querySelectorAll<HTMLButtonElement>("[data-kind]").forEach(btn => btn.onclick = async () => { closeModal(); toast("Download started"); try { const path = await api.downloadMedia(url, btn.dataset.kind as "audio"|"video"); toast(`Saved to ${path}`); } catch (e) { errorToast(e); } });
-}
-
-async function installDependency(name: string): Promise<void> {
-  if (!confirm(`Download and install ${name === "ytdlp" ? "yt-dlp" : "FFmpeg"} into the app tools folder?`)) return;
-  toast(`Installing ${name}…`); try { await api.installDependency(name); state = await api.state(); toast(`${name} installed`); render(); } catch (e) { errorToast(e); }
 }
 
 async function addSearchResult(index: number): Promise<void> {
@@ -403,8 +500,66 @@ async function stopPlayback(): Promise<void> {
 
 function step(delta: number): void { if (!state.songs.length) return; let i = state.songs.findIndex(s => s.id === selectedId); i = (Math.max(i, 0) + delta + state.songs.length) % state.songs.length; selectedId = state.songs[i].id; render(); }
 
-function modal(html: string): void { const root = document.querySelector<HTMLElement>("#modal-root")!; root.innerHTML = `<div class="modal-backdrop">${html}</div>`; root.querySelectorAll<HTMLElement>("[data-close]").forEach(x => x.onclick = closeModal); root.querySelector(".modal-backdrop")!.addEventListener("mousedown", e => { if (e.target === e.currentTarget) closeModal(); }); }
-function closeModal(): void { document.querySelector<HTMLElement>("#modal-root")!.innerHTML = ""; }
+function modal(html: string): void {
+  const root = document.querySelector<HTMLElement>("#modal-root")!;
+  root.innerHTML = `<div class="modal-backdrop">${html}</div>`;
+  root.querySelectorAll<HTMLElement>("[data-close]").forEach(x => x.onclick = closeModal);
+  root.querySelector(".modal-backdrop")!.addEventListener("mousedown", e => { if (e.target === e.currentTarget) closeModal(); });
+  if (modalEscapeHandler) document.removeEventListener("keydown", modalEscapeHandler);
+  modalEscapeHandler = event => { if (event.key === "Escape") closeModal(); };
+  document.addEventListener("keydown", modalEscapeHandler);
+}
+function closeModal(): void {
+  document.querySelector<HTMLElement>("#modal-root")!.innerHTML = "";
+  if (modalEscapeHandler) document.removeEventListener("keydown", modalEscapeHandler);
+  modalEscapeHandler = null;
+}
+
+function guideRow(glyph:string,title:string,copy:string,shortcut?:string):string {
+  return `<article class="guide-row"><span class="guide-icon">${shortcut?`<b>${esc(shortcut)}</b>`:icon(glyph)}</span><span><strong>${esc(title)}</strong><small>${copy}</small></span></article>`;
+}
+
+function showQuickGuide():void {
+  const shortcut=state.settings.showHideHotkey||"F3";
+  modal(`<section class="modal-card guide-card" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+    <div class="modal-head guide-head"><div><p class="eyebrow">WELCOME</p><h2 id="guide-title">Quick start</h2></div><button type="button" data-close aria-label="Close quick guide">×</button></div>
+    <div class="guide-list">
+      ${guideRow("mouse","Phone controls","Right-click anywhere on the phone to hide, rotate, pin, lock, or exit the app.")}
+      ${guideRow("youtube","Search YouTube","Search and add songs directly from the phone with the optional Open on YouTube option.")}
+      ${guideRow("download","Downloads","Open Downloads to install the required tools and save selected songs as MP3 audio or MP4 video.")}
+      ${guideRow("play","Play a song","Double-click any song in your Library to use it with the selected playback mode.")}
+      ${guideRow("car","Car mode","Automatically sends <code>/carurl</code> followed by the song URL to GTA chat.")}
+      ${guideRow("copy","Speaker and TV modes","Open the appropriate URL prompt in GTA first. The player copies and pastes the song URL for you and keeps it on your clipboard.")}
+      ${guideRow("keyboard","Show or hide the phone",`Press <b>${esc(shortcut)}</b> at any time. You can change this shortcut in Settings.`,shortcut)}
+    </div>
+    <div class="guide-footer"><button id="guide-done" class="primary-wide">Got it — Open Library</button><small>You can reopen this guide anytime from Settings → Quick guide.</small></div>
+  </section>`);
+  document.querySelector<HTMLButtonElement>("#guide-done")!.onclick=async()=>{
+    state.settings.hasSeenGuide=true;
+    try{await api.saveSettings(state.settings);}catch(error){errorToast(error);return;}
+    closeModal();
+    page="library";
+    localStorage.setItem("eclipse-page",page);
+    renderTabs();
+    render();
+  };
+}
+
+function askConfirmation(title: string, message: string, actionLabel: string): Promise<boolean> {
+  return new Promise(resolve => {
+    modal(`<section class="modal-card confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><div class="confirm-icon">!</div><div><p class="eyebrow">PLEASE CONFIRM</p><h2 id="confirm-title">${esc(title)}</h2><p>${esc(message)}</p></div><div class="confirm-actions"><button id="confirm-cancel" class="confirm-cancel">Cancel</button><button id="confirm-action" class="confirm-danger">${esc(actionLabel)}</button></div></section>`);
+    const finish = (answer: boolean) => { closeModal(); resolve(answer); };
+    document.querySelector<HTMLButtonElement>("#confirm-cancel")!.onclick = () => finish(false);
+    document.querySelector<HTMLButtonElement>("#confirm-action")!.onclick = () => finish(true);
+    document.querySelector<HTMLElement>(".modal-backdrop")!.addEventListener("mousedown", event => {
+      if (event.target === event.currentTarget) finish(false);
+    });
+    if (modalEscapeHandler) document.removeEventListener("keydown", modalEscapeHandler);
+    modalEscapeHandler = event => { if (event.key === "Escape") finish(false); };
+    document.addEventListener("keydown", modalEscapeHandler);
+    document.querySelector<HTMLButtonElement>("#confirm-cancel")!.focus();
+  });
+}
 function empty(title: string, copy: string): string { return `<div class="empty"><div class="empty-orb">♫</div><h3>${title}</h3><p>${copy}</p></div>`; }
 function loading(label: string): string { return `<div class="empty"><div class="loader"></div><h3>${label}</h3></div>`; }
 function hashHue(value: string): number { let n = 0; for (const c of value) n = (n * 31 + c.charCodeAt(0)) % 360; return n; }
@@ -421,17 +576,23 @@ function applyTextScales():void {
 
 function applyWindowOpacity():void { document.documentElement.style.setProperty("--window-opacity",String(state.settings.windowOpacity||1)); }
 
-async function resizePhone(): Promise<void> {
+async function resizePhone(preserveStoredSize = false): Promise<void> {
   const scale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1));
   const width = (landscape ? 960 : 530) * scale;
   const height = (landscape ? 530 : 960) * scale;
   document.querySelector(".phone-wrap")?.classList.toggle("landscape", landscape);
+  if (!preserveStoredSize) {
+    state.settings.windowWidth = Math.round(width);
+    state.settings.windowHeight = Math.round(height);
+  }
   try { await getCurrentWindow().setSize(new LogicalSize(width, height)); } catch { /* browser preview */ }
 }
 
 async function rotatePhone(): Promise<void> {
   landscape = !landscape;
+  state.settings.orientation = landscape ? "Landscape" : "Portrait";
   await resizePhone();
+  await api.saveSettings(state.settings);
   toast(landscape ? "Landscape view" : "Portrait view");
 }
 
@@ -447,21 +608,63 @@ function phoneMenu(): void {
   document.querySelector<HTMLButtonElement>("#quick-hide")!.onclick = async () => { await getCurrentWindow().hide(); };
   document.querySelector<HTMLButtonElement>("#quick-rotate")!.onclick = async () => { closeModal(); await rotatePhone(); };
   document.querySelector<HTMLButtonElement>("#quick-pin")!.onclick = async () => { state.settings.alwaysOnTop = !state.settings.alwaysOnTop; await api.saveSettings(state.settings); await getCurrentWindow().setAlwaysOnTop(state.settings.alwaysOnTop); closeModal(); };
-  document.querySelector<HTMLButtonElement>("#quick-lock")!.onclick = () => { positionLocked = !positionLocked; localStorage.setItem("eclipse-position-locked", String(positionLocked)); closeModal(); applyPositionLock(); toast(positionLocked ? "Phone position locked" : "Phone position unlocked"); };
+  document.querySelector<HTMLButtonElement>("#quick-lock")!.onclick = async () => { positionLocked = !positionLocked; state.settings.positionLocked = positionLocked; await api.saveSettings(state.settings); closeModal(); applyPositionLock(); toast(positionLocked ? "Phone position locked" : "Phone position unlocked"); };
   document.querySelector<HTMLButtonElement>("#quick-settings")!.onclick = () => { closeModal(); page = "settings"; localStorage.setItem("eclipse-page", page); renderTabs(); render(); };
-  document.querySelector<HTMLButtonElement>("#quick-exit")!.onclick = async () => { if(state.settings.confirmBeforeExit&&!confirm("Exit Eclipse Phone Player completely?"))return;await getCurrentWindow().close(); };
+  document.querySelector<HTMLButtonElement>("#quick-exit")!.onclick = async () => { if(state.settings.confirmBeforeExit&&!await askConfirmation("Exit Eclipse Phone Player?","The phone player will close completely.","Exit"))return;await getCurrentWindow().close(); };
 }
 
 async function restoreWindowPosition():Promise<void>{
-  if(!state.settings.rememberWindowPosition||state.settings.windowX==null||state.settings.windowY==null)return;
-  try{await getCurrentWindow().setPosition(new PhysicalPosition(state.settings.windowX,state.settings.windowY));}catch{}
+  if(!state.settings.rememberWindowPosition)return;
+  try{
+    const width=state.settings.windowWidth||Math.round((landscape?960:530)*state.settings.windowScale);
+    const height=state.settings.windowHeight||Math.round((landscape?530:960)*state.settings.windowScale);
+    await getCurrentWindow().setSize(new LogicalSize(width,height));
+    if(state.settings.windowX==null||state.settings.windowY==null)return;
+
+    const x=state.settings.windowX,y=state.settings.windowY;
+    const monitors=await availableMonitors();
+    const visible=monitors.some(monitor=>{
+      const area=monitor.workArea;
+      const physicalWidth=width*monitor.scaleFactor;
+      const physicalHeight=height*monitor.scaleFactor;
+      const intersectionWidth=Math.max(0,Math.min(x+physicalWidth,area.position.x+area.size.width)-Math.max(x,area.position.x));
+      const intersectionHeight=Math.max(0,Math.min(y+physicalHeight,area.position.y+area.size.height)-Math.max(y,area.position.y));
+      return intersectionWidth>=80&&intersectionHeight>=80;
+    });
+
+    if(visible){
+      await getCurrentWindow().setPosition(new PhysicalPosition(x,y));
+    }else{
+      state.settings.windowX=null;
+      state.settings.windowY=null;
+      await getCurrentWindow().center();
+      await api.saveSettings(state.settings);
+    }
+  }catch{}
 }
 
-async function watchWindowPosition():Promise<void>{
+async function watchWindowGeometry():Promise<void>{
   try{await getCurrentWindow().onMoved(({payload})=>{if(!state.settings.rememberWindowPosition)return;state.settings.windowX=payload.x;state.settings.windowY=payload.y;window.clearTimeout(positionSaveTimer);positionSaveTimer=window.setTimeout(()=>api.saveSettings(state.settings).catch(()=>undefined),500);});}catch{}
+  try{await getCurrentWindow().onResized(async ({payload})=>{if(!state.settings.rememberWindowPosition)return;const factor=await getCurrentWindow().scaleFactor();state.settings.windowWidth=Math.round(payload.width/factor);state.settings.windowHeight=Math.round(payload.height/factor);window.clearTimeout(sizeSaveTimer);sizeSaveTimer=window.setTimeout(()=>api.saveSettings(state.settings).catch(()=>undefined),500);});}catch{}
 }
 
-function startClock(): void { const update = () => { const el = document.querySelector("#clock"); if (el) el.textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date()); }; update(); window.setInterval(update, 30_000); }
+function scheduleSettingsSave():void {
+  window.clearTimeout(settingsSaveTimer);
+  settingsSaveTimer=window.setTimeout(()=>api.saveSettings(state.settings).then(()=>toast("Settings saved")).catch(errorToast),1000);
+}
+
+function updateClock():void {
+  const el=document.querySelector("#clock");
+  if(!el)return;
+  el.textContent=new Intl.DateTimeFormat([],{
+    hour:"2-digit",
+    minute:"2-digit",
+    hour12:state.settings.timeFormat!=="24-hour",
+    ...(state.settings.timeZone==="UTC"?{timeZone:"UTC"}:{})
+  }).format(new Date());
+}
+
+function startClock(): void { updateClock(); window.setInterval(updateClock, 30_000); }
 
 function startVisualizer(): void {
   const canvas = document.querySelector<HTMLCanvasElement>("#visualizer"); if (!canvas) return; const ctx = canvas.getContext("2d")!; let frame = 0;
@@ -472,7 +675,7 @@ function startVisualizer(): void {
 
 async function init(): Promise<void> {
   try {
-    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); state.settings.headingScale ||= 1; state.settings.bodyScale ||= 1; state.settings.smallScale ||= 1; state.settings.navScale ||= 1; state.settings.orientation ||= "Portrait";state.settings.defaultPage||="Library";state.settings.librarySort||="Favorites First";state.settings.windowOpacity=Math.min(1,Math.max(.55,state.settings.windowOpacity||1));state.settings.defaultPlaybackMode||=state.settings.mode||"Car";landscape=state.settings.orientation==="Landscape";page=({Library:"library",YouTube:"youtube",Downloads:"downloads",Settings:"settings"} as const)[state.settings.defaultPage]||"library";state.settings.mode=state.settings.defaultPlaybackMode; selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); applyTextScales();applyWindowOpacity(); shell(); await resizePhone();await restoreWindowPosition();await watchWindowPosition();
+    state = await api.state(); state.settings.windowScale = Math.min(1.15, Math.max(.75, state.settings.windowScale || 1)); state.settings.headingScale ||= 1; state.settings.bodyScale ||= 1; state.settings.smallScale ||= 1; state.settings.navScale ||= 1; state.settings.orientation ||= "Portrait";state.settings.defaultPage||="Library";state.settings.librarySort||="Favorites First";state.settings.windowOpacity=Math.min(1,Math.max(.55,state.settings.windowOpacity||1));state.settings.defaultPlaybackMode||=state.settings.mode||"Car";state.settings.downloadFolder||="";state.settings.timeFormat||="12-hour";state.settings.timeZone||="System";state.settings.showHideHotkey||="F3";state.settings.randomCarHotkey||="Ctrl+F3";state.settings.randomSpeakerHotkey||="Alt+F3";state.settings.randomTvHotkey||="Shift+F3";state.settings.hasSeenGuide??=false;landscape=state.settings.orientation==="Landscape";positionLocked=state.settings.positionLocked||false;page=({Library:"library",YouTube:"youtube",Downloads:"downloads",Settings:"settings"} as const)[state.settings.defaultPage]||"library";state.settings.mode=state.settings.defaultPlaybackMode; selectedId = state.songs[0]?.id ?? ""; applyTheme(state.settings.theme); applyTextScales();applyWindowOpacity(); shell(); await resizePhone(true);await restoreWindowPosition();await watchWindowGeometry();
     await listen<string>("hotkey", async ({ payload }) => {
       if (!state.songs.length) return;
       const previousMode = state.settings.mode;
@@ -480,6 +683,7 @@ async function init(): Promise<void> {
       selectedId = state.songs[Math.floor(Math.random() * state.songs.length)].id;
       await playSelected(); state.settings.mode = previousMode;
     }).catch(() => undefined);
+    if(!state.settings.hasSeenGuide)window.setTimeout(showQuickGuide,250);
   }
   catch (e) { app.innerHTML = `<div class="fatal"><h1>Could not start Eclipse Phone Player</h1><pre>${esc(String(e))}</pre></div>`; }
 }

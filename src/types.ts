@@ -61,7 +61,17 @@ export interface Settings {
   rememberWindowPosition: boolean;
   windowX: number | null;
   windowY: number | null;
+  windowWidth: number | null;
+  windowHeight: number | null;
+  positionLocked: boolean;
+  timeFormat: "12-hour" | "24-hour";
+  timeZone: "System" | "UTC";
+  showHideHotkey: string;
+  randomCarHotkey: string;
+  randomSpeakerHotkey: string;
+  randomTvHotkey: string;
   defaultPlaybackMode: OutputMode;
+  hasSeenGuide: boolean;
 }
 
 export interface DependencyStatus {
