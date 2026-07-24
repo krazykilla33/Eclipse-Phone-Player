@@ -59,10 +59,11 @@ pub fn metadata(app:&AppHandle,url:&str)->Result<SearchResult,String>{
     if !(url.starts_with("http://")||url.starts_with("https://")){return Err("Enter a complete http:// or https:// media URL.".into());}
     if let Some(id)=youtube_video_id(url){
         let endpoint=format!("https://www.youtube.com/oembed?url={}&format=json",urlencoding::encode(url));
-        let data:reqwest::blocking::Response=reqwest::blocking::Client::builder().user_agent("EclipsePhonePlayer/1.5").build().map_err(|e|e.to_string())?
+        let response=reqwest::blocking::Client::builder().user_agent("EclipsePhonePlayer/1.5").build().map_err(|e|e.to_string())?
             .get(endpoint).send().map_err(|e|format!("Could not contact YouTube: {e}"))?
             .error_for_status().map_err(|e|format!("YouTube returned an error: {e}"))?;
-        let data:serde_json::Value=data.json().map_err(|e|format!("Could not read YouTube's response: {e}"))?;
+        let body=response.text().map_err(|e|format!("Could not read YouTube's response: {e}"))?;
+        let data:serde_json::Value=serde_json::from_str(&body).map_err(|e|format!("Could not understand YouTube's response: {e}"))?;
         return Ok(SearchResult{
             title:data["title"].as_str().unwrap_or("Untitled").into(),
             channel:data["author_name"].as_str().unwrap_or("Unknown artist").into(),
@@ -87,7 +88,7 @@ pub fn enrich_legacy_songs(app:&AppHandle,songs:&mut[Song])->Result<(),String>{
     let imported_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
     for song in songs.iter_mut(){
         if song.added_at.is_none(){song.added_at=Some(imported_at);}
-        if (song.length.trim().is_empty()||song.artwork.is_none()) {
+        if song.length.trim().is_empty()||song.artwork.is_none() {
             if let Ok(info)=metadata(app,&song.url){if song.length.trim().is_empty(){song.length=info.length;if song.length=="—"{song.length.clear();}}if song.artwork.is_none(){song.artwork=info.thumbnail;}}
         }
     }
